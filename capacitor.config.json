@@ -1,0 +1,15 @@
+{
+  "appId": "io.github.imuhakim.remotetv",
+  "appName": "RemoteTV",
+  "webDir": "public",
+  "android": {
+    "allowMixedContent": true
+  },
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "plugins": {
+    "CapacitorHttp": { "enabled": true }
+  }
+}

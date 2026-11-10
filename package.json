@@ -6,17 +6,26 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "build:web": "node scripts/vendor.js",
+    "android:sync": "npm run build:web && npx cap sync android"
   },
   "engines": {
     "node": ">=18"
   },
   "license": "MIT",
   "dependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
     "androidtv-remote": "^1.0.10",
     "bonjour-service": "^1.4.4",
     "express": "^4.22.3",
+    "node-forge": "^1.4.3",
+    "protobufjs": "^7.6.6",
     "selfsigned": "^2.4.1",
     "ws": "^8.22.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.0"
   }
 }
