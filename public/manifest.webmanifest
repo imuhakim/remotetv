@@ -1,0 +1,11 @@
+{
+  "name": "RemoteTV",
+  "short_name": "RemoteTV",
+  "description": "Ad-free remote and cast for Sony, Android TV, Roku, LG and Samsung TVs",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d0b14",
+  "theme_color": "#0d0b14",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
