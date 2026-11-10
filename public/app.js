@@ -22,7 +22,15 @@ function safeJson(s) { try { return JSON.parse(s) || {}; } catch { return {}; } 
 function saveSettings() { try { localStorage.setItem('remotetv.settings', JSON.stringify(settings)); } catch { /* private mode */ } }
 
 // ------------------------------------------------------------------ api
+// In the Android app (Capacitor) the backend runs inside the app itself;
+// in a normal browser it is the Node hub at /api.
+const NATIVE = !!window.Capacitor?.isNativePlatform?.();
+
 async function api(path, opts = {}) {
+  if (window.NativeBackend) {
+    try { return await window.NativeBackend.request(opts.method || (opts.body ? 'POST' : 'GET'), path, opts.body); }
+    catch (e) { throw new Error(e.message); }
+  }
   const headers = { ...(opts.body && !(opts.body instanceof Blob) ? { 'Content-Type': 'application/json' } : {}), ...opts.headers };
   if (state.pin) headers['x-pin'] = state.pin;
   const res = await fetch(`/api${path}`, {
@@ -110,6 +118,7 @@ function deviceSheet() {
   });
 }
 
+const NATIVE_TYPES = ['sony', 'androidtv', 'roku'];
 const TYPE_LABEL = { sony: 'Sony BRAVIA (IP control)', androidtv: 'Android / Google TV', roku: 'Roku', lg: 'LG webOS', samsung: 'Samsung Tizen' };
 
 async function scan(out) {
@@ -144,7 +153,7 @@ function manualAdd() {
   openSheet(`<h2>Add TV by IP</h2>
     <div class="card">
       <label class="field">TV IP address<div class="row"><input id="mHost" placeholder="192.168.1.50" inputmode="decimal"></div></label>
-      <label class="field">Brand / protocol<div class="row"><select id="mType">${Object.entries(TYPE_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div></label>
+      <label class="field">Brand / protocol<div class="row"><select id="mType">${Object.entries(TYPE_LABEL).filter(([k]) => !NATIVE || NATIVE_TYPES.includes(k)).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div></label>
       <label class="field">Name<div class="row"><input id="mName" placeholder="Living room TV"></div></label>
     </div><div class="row gap"><button class="btn" id="mSave">Save & connect</button></div>`, (el) => {
     $('#mSave', el).onclick = () => {
@@ -162,7 +171,7 @@ function pairingSheet(msg) {
     const input = $('#pCode', el);
     setTimeout(() => input.focus(), 250);
     const go = async () => {
-      try { await devApi('/pair', { code: input.value }); closeSheet(); toast('Paired ✓'); setTimeout(() => selectDevice(dev()), 1500); }
+      try { await devApi('/pair', { code: input.value }); closeSheet(); toast('Paired ✓'); if (!NATIVE) setTimeout(() => selectDevice(dev()), 1500); }
       catch (e) { toast(e.message, true); }
     };
     $('#pGo', el).onclick = go;
@@ -257,16 +266,19 @@ function applyState(s = {}) {
   else if (s.power === true && dev()) setStatus('on', dev().name);
 }
 
+function handleEvent(m) {
+  if (!dev() || m.deviceId !== dev().id) return;
+  if (m.type === 'state') applyState(m.payload);
+  if (m.type === 'pairing') pairingSheet(m.payload);
+  if (m.type === 'paired') { setStatus('on', dev().name); toast('Connected ✓'); }
+  if (m.type === 'error') toast(m.payload, true);
+}
+
 function connectWs() {
+  if (window.NativeBackend) { window.NativeBackend.onEvent(handleEvent); return; }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/ws${state.pin ? `?pin=${encodeURIComponent(state.pin)}` : ''}`);
-  ws.onmessage = (ev) => {
-    const m = JSON.parse(ev.data);
-    if (!dev() || m.deviceId !== dev().id) return;
-    if (m.type === 'state') applyState(m.payload);
-    if (m.type === 'pairing') pairingSheet(m.payload);
-    if (m.type === 'error') toast(m.payload, true);
-  };
+  ws.onmessage = (ev) => handleEvent(JSON.parse(ev.data));
   ws.onclose = () => setTimeout(connectWs, 2000);
 }
 
@@ -374,6 +386,19 @@ function castStarted(title) {
   }, 2000);
 }
 
+// In the app, the system file picker is used and the phone serves the file to the TV.
+$$('.tile').forEach((tile) => tile.addEventListener('click', async (e) => {
+  if (!NATIVE) return; // browser: the hidden <input type=file> handles it
+  e.preventDefault();
+  if (!dev()) return deviceSheet();
+  const mime = $('input', tile).accept;
+  try {
+    const r = await devApi('/cast/pick', { mime });
+    toast('Playing on TV');
+    castStarted(r.name);
+  } catch (err) { if (!/cancel/i.test(err.message)) toast(err.message, true); }
+}));
+
 $$('[data-upload]').forEach((input) => input.addEventListener('change', () => {
   const file = input.files[0];
   input.value = '';
@@ -458,6 +483,7 @@ $('#btnAddManual').onclick = manualAdd;
 let wakeLock;
 async function applyAwake() {
   try {
+    if (window.NativeBackend) { await window.NativeBackend.keepAwake(!!settings.awake); return; }
     if (settings.awake && 'wakeLock' in navigator && document.visibilityState === 'visible') wakeLock = await navigator.wakeLock.request('screen');
     else { await wakeLock?.release(); wakeLock = null; }
   } catch { /* needs https */ }
@@ -510,14 +536,26 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ------------------------------------------------------------------ boot
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src; el.onload = resolve; el.onerror = () => reject(new Error(`Cannot load ${src}`));
+    document.head.appendChild(el);
+  });
+}
+
 (async function boot() {
+  if (NATIVE) {
+    for (const src of ['vendor/forge.min.js', 'vendor/protobuf.min.js', 'vendor/protos.js', 'native/drivers.js', 'native/backend.js']) await loadScript(src);
+    document.body.classList.add('native');
+  }
   applySettings();
   loadShortcuts();
   connectWs();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if (!NATIVE && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   try {
     state.info = await api('/info');
-    $('#hubAddr').textContent = `${state.info.hub}  ·  HTTPS :8443 for voice`;
+    $('#hubAddr').textContent = NATIVE ? 'Running on this phone — no PC needed' : `${state.info.hub}  ·  HTTPS :8443 for voice`;
     await loadDevices();
     const last = state.devices.find((d) => d.id === state.info.lastDeviceId) || state.devices[0];
     if (last) selectDevice(last);
