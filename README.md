@@ -47,6 +47,14 @@ Panduan ringkas: buka pautan Releases di atas di telefon, muat turun fail `.apk`
 
 APK signing: CI generates a signing key on its first run and keeps it in the GitHub Actions cache, so new versions install over old ones. No key is stored in this repository. GitHub evicts a cache that is unused for 7 days; if that happens, the next APK has a new key and you must uninstall the old app once. To keep one key permanently, add the repository secrets `ANDROID_KEYSTORE_B64` (a base64 PKCS12 keystore), `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS`.
 
+### Is the APK safe to install?
+
+The repository is public, so anyone can read the code, but only the owner can change it: others can only fork it or open a pull request, and pull requests never trigger the APK build. Each release is built by GitHub Actions from a commit on `main`. Every action in the workflow is pinned to a fixed commit, and the run records a signed [build attestation](https://github.com/imuhakim/remotetv/attestations) that ties the APK file to that commit. Android also refuses to update the app with an APK signed by a different key.
+
+To check a downloaded APK on a PC: `gh attestation verify RemoteTV-v1.1.N.apk -R imuhakim/remotetv`. Download only from this repository's Releases page.
+
+The app asks only for network, Wi-Fi multicast, vibration and infra-red permissions. It has no access to contacts, SMS, storage (files are opened through the system picker), location, the microphone or the camera.
+
 ## Quick start (hub version)
 
 ```bash
