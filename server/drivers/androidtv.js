@@ -4,7 +4,10 @@
 // same protocol the Google TV phone app uses. Works on Sony BRAVIA Android
 // TVs (e.g. KD-55X7500F), Chromecast with Google TV, TCL, Xiaomi, Philips...
 // Library: https://github.com/louis49/androidtv-remote
-const { AndroidRemote, RemoteKeyCode, RemoteDirection } = require('androidtv-remote');
+// Loaded lazily: the library probes system info (dmidecode on Linux) at
+// require time, which must not happen unless an Android TV is actually used.
+let lib;
+const atv = () => (lib ||= require('androidtv-remote'));
 
 const MAP = {
   up: 'KEYCODE_DPAD_UP', down: 'KEYCODE_DPAD_DOWN', left: 'KEYCODE_DPAD_LEFT', right: 'KEYCODE_DPAD_RIGHT',
@@ -43,7 +46,7 @@ class AndroidTvDriver {
   connect() {
     return new Promise((resolve, reject) => {
       const opts = { pairing_port: 6467, remote_port: 6466, name: 'RemoteTV Hub', cert: this.device.cert || {} };
-      const r = new AndroidRemote(this.device.host, opts);
+      const r = new (atv().AndroidRemote)(this.device.host, opts);
       this.remote = r;
       let settled = false;
       const done = (fn, v) => { if (!settled) { settled = true; fn(v); } };
@@ -78,9 +81,10 @@ class AndroidTvDriver {
     this.remote.sendCode(String(code).trim().toUpperCase());
   }
 
-  supportedKeys() { return Object.keys(MAP).filter((k) => RemoteKeyCode[MAP[k]] !== undefined); }
+  supportedKeys() { return Object.keys(MAP).filter((k) => atv().RemoteKeyCode[MAP[k]] !== undefined); }
 
   async sendKey(key, mode = 'short') {
+    const { RemoteKeyCode, RemoteDirection } = atv();
     const code = RemoteKeyCode[MAP[key]];
     if (code === undefined) throw new Error(`Android TV: key "${key}" not supported`);
     const dir = mode === 'start' ? RemoteDirection.START_LONG

@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server/index.js",
-    "test": "node --test test/*.test.js",
+    "test": "node --test --test-force-exit --test-timeout=60000 test/*.test.js",
     "build:web": "node scripts/vendor.js",
     "android:sync": "npm run build:web && npx cap sync android"
   },
