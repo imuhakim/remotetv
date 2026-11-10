@@ -41,6 +41,7 @@ See [docs/EVIDENCE.md](docs/EVIDENCE.md) for the analysis of the original app an
 3. Open RemoteTV, tap **Tap to connect your TV**, then **Scan network**, and pick your TV.
    - **Android TV** (e.g. Sony KD-55X7500F): type the 6-character code shown on the TV.
    - **Sony BRAVIA (IP control)**: set a Pre-Shared Key on the TV first (see below). This adds the keyboard, the HDMI input list and power-on.
+   - **Sony TV · infra-red (no Wi-Fi)**: appears only on phones with an IR blaster (many Xiaomi/Redmi/POCO, some Huawei/Honor). Point the top of the phone at the TV. It sends Sony SIRC codes at 40 kHz, so it works without Wi-Fi or pairing and can switch the TV on, but it has buttons only: no volume level, app list or keyboard.
 
 Panduan ringkas: buka pautan Releases di atas di telefon, muat turun fail `.apk`, pasang, kemudian tekan **Scan network** dan masukkan kod yang keluar di TV.
 

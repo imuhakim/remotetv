@@ -214,3 +214,37 @@ test('APK backend drives Sony BRAVIA over HTTP and rejects LG/Samsung', async (t
   assert.ok(seen.some((s) => s.url === '/sony/appControl' && /setTextForm/.test(s.body)));
   await be.request('DELETE', `/devices/${dev.id}`);
 });
+
+test('APK infra-red mode sends Sony SIRC patterns through the phone IR emitter', async () => {
+  const sent = [];
+  const plugin = { ...mockPlugin(), irInfo: async () => ({ hasIr: true }), irTransmit: async (o) => { sent.push(o); } };
+  const be = loadApp(plugin);
+  assert.equal((await be.request('GET', '/info')).hasIr, true);
+  const dev = await be.request('POST', '/devices', { type: 'sony_ir' });
+  assert.equal(dev.host, 'infra-red');
+  assert.equal((await be.request('POST', `/devices/${dev.id}/connect`, {})).status, 'connected');
+
+  // Decode marks after the 2.4 ms header back into bits (LSB first).
+  const decode = (p) => {
+    assert.equal(p[0], 2400);
+    const bits = [];
+    for (let i = 2; i < p.length && p[i] !== 2400; i += 2) bits.push(p[i] === 1200 ? 1 : 0);
+    const num = (from, n) => bits.slice(from, from + n).reduce((a, b, i) => a | (b << i), 0);
+    return { bits: bits.length, cmd: num(0, 7), dev: num(7, bits.length - 7) };
+  };
+  await be.request('POST', `/devices/${dev.id}/key`, { key: 'vol_up' });
+  await be.request('POST', `/devices/${dev.id}/key`, { key: 'power' });
+  await be.request('POST', `/devices/${dev.id}/key`, { key: 'back' });
+  assert.deepEqual(decode(sent[0].pattern), { bits: 12, cmd: 0x12, dev: 1 });
+  assert.deepEqual(decode(sent[1].pattern), { bits: 12, cmd: 0x15, dev: 1 });
+  assert.deepEqual(decode(sent[2].pattern), { bits: 15, cmd: 0x23, dev: 0x97 });
+  assert.equal(sent[0].frequency, 40000);
+  // 3 frames of 45 ms each, the last one without its trailing gap.
+  const total = sent[0].pattern.reduce((a, x) => a + x, 0);
+  assert.ok(total > 90000 && total < 135000, `pattern length ${total}`);
+  assert.equal(sent[0].pattern.length % 2, 1, 'starts and ends with a mark');
+
+  const noIr = loadApp({ ...mockPlugin(), irInfo: async () => ({ hasIr: false }) });
+  const d2 = await noIr.request('POST', '/devices', { type: 'sony_ir' });
+  await assert.rejects(noIr.request('POST', `/devices/${d2.id}/connect`, {}), /no infra-red/);
+});

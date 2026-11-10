@@ -370,6 +370,43 @@ public class RemoteTvPlugin extends Plugin {
         });
     }
 
+    // ------------------------------------------------------------ infra-red
+    private android.hardware.ConsumerIrManager ir() {
+        return (android.hardware.ConsumerIrManager) getContext().getSystemService(Context.CONSUMER_IR_SERVICE);
+    }
+
+    @PluginMethod
+    public void irInfo(PluginCall call) {
+        JSObject r = new JSObject();
+        boolean has = false;
+        try {
+            android.hardware.ConsumerIrManager m = ir();
+            has = m != null && m.hasIrEmitter();
+        } catch (Exception ignored) { }
+        r.put("hasIr", has);
+        call.resolve(r);
+    }
+
+    /** pattern: alternating on/off durations in microseconds, starting with "on". */
+    @PluginMethod
+    public void irTransmit(PluginCall call) {
+        final int freq = call.getInt("frequency", 40000);
+        final JSArray arr = call.getArray("pattern");
+        new Thread(() -> {
+            try {
+                android.hardware.ConsumerIrManager m = ir();
+                if (m == null || !m.hasIrEmitter()) { call.reject("This phone has no infra-red emitter"); return; }
+                List<Integer> list = arr.toList();
+                int[] pattern = new int[list.size()];
+                for (int i = 0; i < pattern.length; i++) pattern[i] = ((Number) (Object) list.get(i)).intValue();
+                m.transmit(freq, pattern);
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("IR send failed: " + e.getMessage());
+            }
+        }).start();
+    }
+
     @Override
     protected void handleOnDestroy() {
         for (Conn c : conns.values()) {

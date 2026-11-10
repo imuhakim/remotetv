@@ -449,5 +449,49 @@
     },
   };
 
-  window.NativeTv = { RemoteTv, req, xmlTag, drivers: { sony: Sony, roku: Roku, androidtv: AndroidTv }, cast };
+  // ============================================================ Sony IR
+  // Uses the phone's infra-red emitter (ConsumerIrManager). Sony IRCC codes
+  // are the TV's own SIRC IR codes: 13 bytes = [type][device][command][3],
+  // type 1 = 12-bit (5-bit device), 2 = 15-bit (8-bit device), 3 = 20-bit.
+  function irccToSirc(code) {
+    const b = Uint8Array.from(atob(code), (c) => c.charCodeAt(0));
+    const word = (i) => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+    const type = word(0), dev = word(4), cmd = word(8);
+    if (type === 1) return { cmd, bits: [[cmd, 7], [dev, 5]] };
+    if (type === 2) return { cmd, bits: [[cmd, 7], [dev, 8]] };
+    if (type === 3) return { cmd, bits: [[cmd, 7], [dev & 0xff, 5], [dev >> 8, 8]] }; // [ext<<8 | device]
+    throw new Error('Unknown Sony code type');
+  }
+  // SIRC: 40 kHz, 2.4 ms header, "1" = 1.2 ms mark, "0" = 0.6 ms mark, 0.6 ms
+  // spaces, LSB first, frames every 45 ms. Sony TVs want the frame 3 times.
+  function sircPattern(bits, repeats = 3) {
+    const frame = [2400, 600];
+    for (const [value, n] of bits) for (let i = 0; i < n; i++) frame.push((value >> i) & 1 ? 1200 : 600, 600);
+    const len = frame.reduce((a, x) => a + x, 0);
+    frame[frame.length - 1] += Math.max(0, 45000 - len);
+    const out = [];
+    for (let r = 0; r < repeats; r++) out.push(...frame);
+    out.pop(); // end on a mark
+    return out;
+  }
+  const SONY_IR = { ...SONY_FALLBACK, power: c1(0x15), power_on: c1(0x2e) }; // 0x15 = power toggle
+
+  class SonyIr {
+    constructor(device) { this.device = device; }
+    async connect() {
+      const r = await RemoteTv.irInfo().catch(() => ({ hasIr: false }));
+      if (!r.hasIr) throw new Error('This phone has no infra-red emitter. Use Wi-Fi mode (Android TV or Sony BRAVIA) instead.');
+      return true;
+    }
+    async sendKey(key) {
+      if (key === 'play_pause') { key = this.paused ? 'play' : 'pause'; this.paused = !this.paused; }
+      const code = SONY_IR[key];
+      if (!code) throw new Error(`Key "${key}" is not available over infra-red`);
+      await RemoteTv.irTransmit({ frequency: 40000, pattern: sircPattern(irccToSirc(code).bits) });
+    }
+    async launchApp() { throw new Error('Opening apps needs Wi-Fi mode. Over infra-red use Home and the arrows.'); }
+    close() {}
+  }
+
+  window.NativeTv = { RemoteTv, req, xmlTag, drivers: { sony: Sony, roku: Roku, androidtv: AndroidTv, sony_ir: SonyIr }, cast, ir: { irccToSirc, sircPattern, SONY_IR } };
 })();

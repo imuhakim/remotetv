@@ -111,7 +111,10 @@ function deviceSheet() {
   openSheet(`<h2>Your TVs</h2>
     <div class="card list">${items || '<div class="item"><small>No TV saved yet. Scan your Wi-Fi network.</small></div>'}</div>
     <div class="row gap"><button class="btn" id="sScan">Scan network</button><button class="btn ghost" id="sManual">Add by IP</button></div>
+    ${state.info?.hasIr ? `<div class="row gap" style="margin-top:8px"><button class="btn ghost" id="sIr">Sony TV · infra-red (no Wi-Fi)</button></div>
+    <p class="sub" style="margin-top:6px">Infra-red works like the original remote: point the top of the phone at the TV. Buttons only — no volume level, apps list or keyboard.</p>` : ''}
     <div id="scanOut"></div>`, (el) => {
+    if ($('#sIr', el)) $('#sIr', el).onclick = () => addDevice({ type: 'sony_ir', name: 'Sony TV (infra-red)' });
     $$('[data-pick]', el).forEach((b) => b.onclick = () => { closeSheet(); selectDevice(state.devices.find((d) => d.id === b.dataset.pick)); });
     $('#sScan', el).onclick = () => scan($('#scanOut', el));
     $('#sManual', el).onclick = manualAdd;

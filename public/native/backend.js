@@ -107,10 +107,14 @@
 
   // ---------------------------------------------------------------- routes
   const routes = [
-    ['GET', /^\/info$/, () => ({ keys: KEYS, hub: 'This phone (no hub needed)', native: true, lastDeviceId: data.lastDeviceId })],
+    ['GET', /^\/info$/, async () => {
+      const ir = await RemoteTv.irInfo().catch(() => ({ hasIr: false }));
+      return { keys: KEYS, hub: 'This phone (no hub needed)', native: true, hasIr: !!ir.hasIr, lastDeviceId: data.lastDeviceId };
+    }],
     ['GET', /^\/discover$/, (b, m, q) => discover(Number(q.get('timeout')) || 3500)],
     ['GET', /^\/devices$/, () => data.devices.map((d) => ({ ...publicView(d), status: sessions.get(d.id)?.status || 'idle', state: sessions.get(d.id)?.state || {} }))],
     ['POST', /^\/devices$/, (b) => {
+      if (b?.type === 'sony_ir') b = { name: 'Sony TV (infra-red)', ...b, host: 'infra-red' };
       if (!b?.host || !b.type) throw err(400, 'host and type are required');
       if (!drivers[b.type]) throw err(400, `${b.type} TVs need the PC hub version for now`);
       const fields = ['host', 'type', 'name', 'psk', 'mac', 'dlna', 'dialUrl', 'port'];
