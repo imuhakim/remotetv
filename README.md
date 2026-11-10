@@ -6,11 +6,20 @@ An ad-free, open-source TV remote and caster. It is a rebuild of a typical "TV R
 
 **Supported TVs:** Sony BRAVIA (IP control), Android TV / Google TV (Remote v2, the same protocol as Google's app), Roku, LG webOS and Samsung Tizen. **Casting** uses DLNA and DIAL, which most smart TVs support.
 
-How it works: a small Node.js hub runs on any always-on machine on your Wi-Fi (PC, Raspberry Pi, or Termux on an old Android phone). Your phone opens the hub's address and installs it as an app (PWA). The hub speaks the TV protocols, which browsers cannot do directly.
+There are two ways to use it:
+
+| | **Android app (APK)**, no PC needed | **Hub + browser** |
+|---|---|---|
+| Install | Download the APK from [Releases](https://github.com/imuhakim/remotetv/releases/latest) | Run `npm start` on a PC or Raspberry Pi, then open the address on the phone |
+| TVs | Sony BRAVIA, Android/Google TV, Roku | Also LG webOS and Samsung Tizen |
+| Cast from phone | Yes: the phone streams the file to the TV itself | Yes: the file is uploaded to the hub |
 
 ```
-Phone (PWA) ──HTTP/WebSocket──► RemoteTV hub ──► TV (Sony REST/IRCC · Android TV v2 TLS · Roku ECP · LG SSAP · Samsung WS · DLNA · DIAL)
+APK:  Phone app ─────────────────────────────► TV (Sony REST/IRCC · Android TV v2 TLS · Roku ECP · DLNA · DIAL)
+Hub:  Phone (PWA) ─HTTP/WS─► RemoteTV hub ───► TV (the above + LG SSAP · Samsung WS)
 ```
+
+Both use the same UI (`public/`). The APK runs the TV drivers inside the app (`public/native/`) through a small native plugin for raw TLS, SSDP/mDNS, Wake-on-LAN and a file server (`android/app/src/main/java/.../RemoteTvPlugin.java`). GitHub Actions builds a new APK on every push to `main`.
 
 See [docs/EVIDENCE.md](docs/EVIDENCE.md) for the analysis of the original app and the comparison table.
 
@@ -25,7 +34,19 @@ See [docs/EVIDENCE.md](docs/EVIDENCE.md) for the analysis of the original app an
 - **Settings:** haptics, smooth press, keep screen awake, theater mode, swipe sensitivity, saved TVs. Everything is unlocked.
 - **Extras:** auto-discovery (SSDP and mDNS), macros API, desktop keyboard shortcuts, optional hub PIN, offline app shell.
 
-## Quick start
+## Install the Android app (no PC)
+
+1. On your phone, open **https://github.com/imuhakim/remotetv/releases/latest**.
+2. Download **RemoteTV-v1.1.x.apk** and open it. Allow "Install unknown apps" for your browser when Android asks.
+3. Open RemoteTV, tap **Tap to connect your TV**, then **Scan network**, and pick your TV.
+   - **Android TV** (e.g. Sony KD-55X7500F): type the 6-character code shown on the TV.
+   - **Sony BRAVIA (IP control)**: set a Pre-Shared Key on the TV first (see below). This adds the keyboard, the HDMI input list and power-on.
+
+Panduan ringkas: buka pautan Releases di atas di telefon, muat turun fail `.apk`, pasang, kemudian tekan **Scan network** dan masukkan kod yang keluar di TV.
+
+APK signing: CI generates a signing key on its first run and keeps it in the GitHub Actions cache, so new versions install over old ones. No key is stored in this repository. GitHub evicts a cache that is unused for 7 days; if that happens, the next APK has a new key and you must uninstall the old app once. To keep one key permanently, add the repository secrets `ANDROID_KEYSTORE_B64` (a base64 PKCS12 keystore), `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS`.
+
+## Quick start (hub version)
 
 ```bash
 git clone https://github.com/imuhakim/remotetv.git
@@ -117,7 +138,8 @@ The Android TV, LG and Samsung drivers follow the libraries and protocols listed
 
 ## Roadmap
 
-- Native Android wrapper (Capacitor) so the phone talks to the TV without a hub. That needs TCP and TLS sockets, which browsers do not have.
+- LG and Samsung drivers inside the APK (they need WebSockets that accept the TV's self-signed certificate).
+- Voice search inside the APK (Android WebView has no speech recognition).
 - Screen mirroring from the phone. This needs a native app, using Android `MediaProjection` with Cast or Miracast.
 - Text entry over the Android TV Remote v2 IME channel.
 

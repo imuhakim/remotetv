@@ -1,0 +1,95 @@
+name: Build Android APK
+
+# Every push to main builds a signed APK and publishes it as a GitHub Release,
+# so the app can be installed straight on the phone — no PC needed.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Sync web app into Android project
+        run: npm run android:sync
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # Signing key: a repository secret if you add one, otherwise a key generated
+      # once and kept in the Actions cache so new APKs install over old ones.
+      # No key or password is ever stored in the repository.
+      - name: Restore cached signing key
+        id: keycache
+        uses: actions/cache@v4
+        with:
+          path: ~/.remotetv-signing
+          key: remotetv-signing-v1
+
+      - name: Prepare signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          dir="$HOME/.remotetv-signing"
+          mkdir -p "$dir"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
+            echo "RTV_KEYSTORE=$RUNNER_TEMP/release.p12" >> "$GITHUB_ENV"
+            echo "::add-mask::$KEYSTORE_PASSWORD"
+            echo "RTV_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "RTV_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ ! -f "$dir/release.p12" ]; then
+            openssl rand -hex 24 > "$dir/password"
+            keytool -genkeypair -noprompt -storetype PKCS12 -keystore "$dir/release.p12"               -alias remotetv -keyalg RSA -keysize 2048 -validity 10000               -dname "CN=RemoteTV" -storepass "$(cat "$dir/password")" -keypass "$(cat "$dir/password")"
+          fi
+          echo "::add-mask::$(cat "$dir/password")"
+          echo "RTV_KEYSTORE=$dir/release.p12" >> "$GITHUB_ENV"
+          echo "RTV_KEYSTORE_PASSWORD=$(cat "$dir/password")" >> "$GITHUB_ENV"
+          echo "RTV_KEY_ALIAS=remotetv" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/RemoteTV-v1.1.${{ github.run_number }}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RemoteTV-apk
+          path: RemoteTV-*.apk
+
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.1.${{ github.run_number }}
+          name: RemoteTV v1.1.${{ github.run_number }}
+          make_latest: true
+          files: RemoteTV-*.apk
+          body: |
+            Install on your Android phone: download **RemoteTV-v1.1.${{ github.run_number }}.apk** below, open it and allow "Install unknown apps" for your browser.
+            Works without a PC for Sony BRAVIA, Android TV / Google TV and Roku. Built from ${{ github.sha }}.
