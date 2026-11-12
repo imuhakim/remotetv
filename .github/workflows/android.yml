@@ -84,12 +84,20 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
+          # Build errors are also raised as annotations, readable without opening the logs.
+          gradle() {
+            set -o pipefail
+            ./gradlew --no-daemon "$@" 2>&1 | tee -a "$RUNNER_TEMP/gradle.log" || {
+              grep -E "error:|e: |FAILURE|What went wrong|^> |AAPT|Execution failed" "$RUNNER_TEMP/gradle.log" | head -n 25 | while IFS= read -r l; do echo "::error::$l"; done
+              return 1
+            }
+          }
           # The TV Helper is built first and bundled inside the phone app, so the
           # phone can install it on the TV over ADB.
-          ./gradlew --no-daemon :tvhelper:assembleRelease
+          gradle :tvhelper:assembleRelease
           mkdir -p app/src/main/assets
           cp tvhelper/build/outputs/apk/release/tvhelper-release.apk app/src/main/assets/tvhelper.apk
-          ./gradlew --no-daemon :app:assembleRelease
+          gradle :app:assembleRelease
           cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/RemoteTV-v1.1.${{ github.run_number }}.apk"
           cp tvhelper/build/outputs/apk/release/tvhelper-release.apk "$GITHUB_WORKSPACE/RemoteTV-TVHelper-v1.1.${{ github.run_number }}.apk"
 
