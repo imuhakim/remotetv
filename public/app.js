@@ -115,10 +115,13 @@ let tempAdd = false; // "shop TV" switch in the TV sheet
 
 function deviceSheet() {
   const items = state.devices.map((d) => `
-    <button class="item" data-pick="${d.id}" style="width:100%;text-align:left">
-      <div><b>${esc(d.name)}<span class="tag">${esc(d.temp ? 'shop' : d.type)}</span></b><small>${esc(hostLabel(d))} · ${esc(d.status)}${d.temp ? ` · ${esc(tempLeft(d))}` : ''}</small></div>
-      <span class="dot ${d.status === 'connected' ? 'on' : ''}"></span>
-    </button>`).join('');
+    <div class="item tv-row">
+      <button class="tv-pick" data-pick="${d.id}">
+        <div><b>${esc(d.name)}<span class="tag">${esc(d.temp ? 'shop' : d.type === 'sony_ir' ? 'ir' : d.type)}</span></b><small>${esc(hostLabel(d))} · ${esc(d.status)}${d.temp ? ` · ${esc(tempLeft(d))}` : ''}</small></div>
+        <span class="dot ${d.status === 'connected' ? 'on' : ''}"></span>
+      </button>
+      <button class="tv-edit" data-edit="${d.id}" aria-label="Rename ${esc(d.name)}">✎</button>
+    </div>`).join('');
   openSheet(`<h2>Your TVs</h2>
     <div class="card list">${items || '<div class="item"><small>No TV saved yet. Scan your Wi-Fi network.</small></div>'}</div>
     <label class="item card shop-switch"><div><b>Shop / someone else's TV</b><small>Forgotten automatically after 1 month without use</small></div><input type="checkbox" class="switch" id="sTemp" ${tempAdd ? 'checked' : ''}></label>
@@ -147,6 +150,7 @@ function deviceSheet() {
       $('#sFind', el).onclick = () => irTestSheet(allSetsPopularFirst(), 0, 'Any brand');
     }
     $$('[data-pick]', el).forEach((b) => b.onclick = () => { closeSheet(); selectDevice(state.devices.find((d) => d.id === b.dataset.pick)); });
+    $$('[data-edit]', el).forEach((b) => b.onclick = () => editDevice(state.devices.find((d) => d.id === b.dataset.edit), deviceSheet));
     $('#sScan', el).onclick = () => scan($('#scanOut', el));
     $('#sManual', el).onclick = manualAdd;
   });
@@ -208,6 +212,10 @@ async function addDevice(f) {
     const psk = prompt('Sony Pre-Shared Key\n(TV: Settings › Network › Home network › IP control › Pre-Shared Key)', '0000');
     if (psk === null) return;
     body.psk = psk;
+  }
+  if (tempAdd && !body.name) {
+    const n = prompt('Name this TV so it is easy to find (e.g. "Klinik Dr Ahmad")', '');
+    if (n && n.trim()) body.name = n.trim().slice(0, 40);
   }
   try {
     const d = await api('/devices', { body });
@@ -1158,21 +1166,39 @@ function renderDeviceList() {
   $$('[data-edit]', el).forEach((b) => b.onclick = () => editDevice(state.devices.find((d) => d.id === b.dataset.edit)));
 }
 
-function editDevice(d) {
-  openSheet(`<h2>Edit ${esc(d.name)}</h2><div class="card">
-    <label class="field">Name<div class="row"><input id="eName" value="${esc(d.name)}"></div></label>
+function editDevice(d, back) {
+  if (!d) return;
+  const ir = /^infra-red/.test(d.host || '');
+  openSheet(`<h2>Edit TV</h2><div class="card">
+    <label class="field">Name<div class="row"><input id="eName" value="${esc(d.name)}" maxlength="40" placeholder="e.g. Living room, Klinik Dr Ahmad"></div></label>
     ${d.type === 'sony' ? '<label class="field">Pre-Shared Key (leave blank to keep)<div class="row"><input id="ePsk" type="password"></div></label>' : ''}
-    <label class="field">MAC address (for Wake-on-LAN power on)<div class="row"><input id="eMac" value="${esc(d.mac || '')}" placeholder="AA:BB:CC:DD:EE:FF"></div></label>
-  </div><div class="row gap"><button class="btn" id="eSave">Save</button><button class="btn ghost" id="eWake">Wake TV now</button></div>`, (el) => {
-    $('#eSave', el).onclick = async () => {
-      const body = { name: $('#eName', el).value.trim() || d.name, mac: $('#eMac', el).value.trim() };
+    ${ir ? '' : `<label class="field">MAC address (for Wake-on-LAN power on)<div class="row"><input id="eMac" value="${esc(d.mac || '')}" placeholder="AA:BB:CC:DD:EE:FF"></div></label>`}
+  </div><div class="row gap"><button class="btn" id="eSave">Save</button>${ir ? '' : '<button class="btn ghost" id="eWake">Wake TV now</button>'}<button class="btn danger" id="eDel">Forget</button></div>`, (el) => {
+    const input = $('#eName', el);
+    setTimeout(() => { input.focus(); input.select(); }, 250);
+    const done = async () => { await loadDevices().catch(() => {}); if (back) back(); else closeSheet(); };
+    const save = async () => {
+      const body = { name: input.value.trim().slice(0, 40) || d.name };
+      if ($('#eMac', el)) body.mac = $('#eMac', el).value.trim();
       const psk = $('#ePsk', el)?.value;
       if (psk) body.psk = psk;
-      try { await api(`/devices/${d.id}`, { method: 'PATCH', body }); toast('Saved'); closeSheet(); loadDevices(); }
-      catch (e) { toast(e.message, true); }
+      try {
+        await api(`/devices/${d.id}`, { method: 'PATCH', body });
+        if (dev()?.id === d.id) { dev().name = body.name; $('#deviceName').textContent = body.name; }
+        toast('Saved');
+        done();
+      } catch (e) { toast(e.message, true); }
     };
-    $('#eWake', el).onclick = async () => {
+    $('#eSave', el).onclick = save;
+    input.onkeydown = (e) => { if (e.key === 'Enter') save(); };
+    if ($('#eWake', el)) $('#eWake', el).onclick = async () => {
       try { await api(`/devices/${d.id}/wake`, { body: {} }); toast('Wake packet sent'); } catch (e) { toast(e.message, true); }
+    };
+    $('#eDel', el).onclick = async () => {
+      if (!confirm(`Forget "${d.name}"? You can add it again later.`)) return;
+      await api(`/devices/${d.id}`, { method: 'DELETE' });
+      if (dev()?.id === d.id) { state.current = null; setStatus('', 'Tap to connect your TV'); }
+      done();
     };
   });
 }
