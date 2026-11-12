@@ -72,7 +72,7 @@ public class RemoteTvPlugin extends Plugin {
     private MediaServer mediaServer;
 
     private static class Conn {
-        SSLSocket socket;
+        java.net.Socket socket;
         OutputStream out;
         final ExecutorService writer = Executors.newSingleThreadExecutor();
     }
@@ -226,11 +226,38 @@ public class RemoteTvPlugin extends Plugin {
         }).start();
     }
 
-    private void readLoop(int id, SSLSocket s) {
+    /** Plain TCP (used for ADB on port 5555). Same tlsData/tlsClose events and tlsWrite/tlsClose calls. */
+    @PluginMethod
+    public void tcpConnect(PluginCall call) {
+        final String host = call.getString("host");
+        final int port = call.getInt("port", 5555);
+        final int timeout = call.getInt("timeoutMs", 6000);
+        if (host == null) { call.reject("host is required"); return; }
+        new Thread(() -> {
+            try {
+                java.net.Socket s = new java.net.Socket();
+                s.connect(new InetSocketAddress(host, port), timeout);
+                s.setTcpNoDelay(true);
+                final int id = nextId.getAndIncrement();
+                Conn c = new Conn();
+                c.socket = s;
+                c.out = s.getOutputStream();
+                conns.put(id, c);
+                JSObject ret = new JSObject();
+                ret.put("id", id);
+                call.resolve(ret);
+                readLoop(id, s);
+            } catch (Exception e) {
+                call.reject("Connect failed: " + e.getClass().getSimpleName() + " " + e.getMessage());
+            }
+        }).start();
+    }
+
+    private void readLoop(int id, java.net.Socket s) {
         String error = null;
         try {
             InputStream in = s.getInputStream();
-            byte[] buf = new byte[16384];
+            byte[] buf = new byte[65536];
             int n;
             while ((n = in.read(buf)) > 0) {
                 JSObject ev = new JSObject();
@@ -403,6 +430,40 @@ public class RemoteTvPlugin extends Plugin {
                 call.resolve();
             } catch (Exception e) {
                 call.reject("IR send failed: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    // ------------------------------------------------------ save screenshot
+    /** Saves a base64 PNG to Pictures/RemoteTV (MediaStore on Android 10+, app folder before). */
+    @PluginMethod
+    public void saveImage(PluginCall call) {
+        final String data = call.getString("data");
+        final String name = call.getString("name", "tv.png").replaceAll("[^A-Za-z0-9_.-]", "_");
+        if (data == null) { call.reject("data is required"); return; }
+        new Thread(() -> {
+            try {
+                byte[] bytes = Base64.decode(data, Base64.DEFAULT);
+                JSObject r = new JSObject();
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    android.content.ContentValues v = new android.content.ContentValues();
+                    v.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, name);
+                    v.put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/png");
+                    v.put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/RemoteTV");
+                    Uri uri = getContext().getContentResolver().insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+                    if (uri == null) throw new Exception("cannot create the file");
+                    try (OutputStream o = getContext().getContentResolver().openOutputStream(uri)) { o.write(bytes); }
+                    r.put("path", "Pictures/RemoteTV/" + name);
+                } else {
+                    java.io.File dir = new java.io.File(getContext().getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES), "RemoteTV");
+                    if (!dir.exists() && !dir.mkdirs()) throw new Exception("cannot create folder");
+                    java.io.File f = new java.io.File(dir, name);
+                    try (java.io.FileOutputStream o = new java.io.FileOutputStream(f)) { o.write(bytes); }
+                    r.put("path", f.getAbsolutePath());
+                }
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject("Save failed: " + e.getMessage());
             }
         }).start();
     }

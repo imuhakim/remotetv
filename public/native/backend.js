@@ -51,6 +51,28 @@
     return { device: d, driver: s.driver };
   }
 
+  // --------------------------------------------------- ADB (advanced mode)
+  const adbs = new Map(); // deviceId -> connected NativeAdb.Adb
+  async function adbFor(id, { fresh = false } = {}) {
+    const d = getDev(id);
+    if (!d) throw err(404, 'Unknown device');
+    if (!window.NativeAdb) throw err(501, 'ADB is not available in this build');
+    let a = adbs.get(id);
+    if (a && !a.closed && !fresh) return a;
+    a?.close();
+    a = new window.NativeAdb.Adb(d.host, d.adbPort || 5555);
+    adbs.set(id, a);
+    try {
+      await a.connect({
+        timeoutMs: fresh ? 60000 : 10000,
+        onPrompt: () => listener({ type: 'adbPrompt', deviceId: id, payload: {} }),
+      });
+    } catch (e) { adbs.delete(id); throw err(502, e.message); }
+    if (!d.adb) { d.adb = true; save(); }
+    return a;
+  }
+  const A = () => window.NativeAdb.features;
+
   function mediaMime(url) {
     const ext = url.split(/[?#]/)[0].split('.').pop().toLowerCase();
     return { mp4: 'video/mp4', mkv: 'video/x-matroska', webm: 'video/webm', mov: 'video/quicktime', m3u8: 'application/vnd.apple.mpegurl',
@@ -114,8 +136,8 @@
   // ---------------------------------------------------------------- routes
   const routes = [
     ['GET', /^\/info$/, async () => {
-      const ir = await RemoteTv.irInfo().catch(() => ({ hasIr: false }));
-      return { keys: KEYS, hub: 'This phone (no hub needed)', native: true, hasIr: !!ir.hasIr, lastDeviceId: data.lastDeviceId };
+      const ir = await Promise.resolve().then(() => RemoteTv.irInfo()).catch(() => ({ hasIr: false }));
+      return { keys: KEYS, hub: 'This phone (no hub needed)', native: true, adb: !!window.NativeAdb, hasIr: !!ir.hasIr, lastDeviceId: data.lastDeviceId };
     }],
     ['GET', /^\/discover$/, (b, m, q) => discover(Number(q.get('timeout')) || 3500)],
     ['GET', /^\/devices$/, () => data.devices.map((d) => ({ ...publicView(d), status: sessions.get(d.id)?.status || 'idle', state: sessions.get(d.id)?.state || {} }))],
@@ -135,11 +157,13 @@
     ['PATCH', /^\/devices\/(\w+)$/, (b, m) => {
       const d = getDev(m[1]);
       if (!d) throw err(404, 'Unknown device');
-      for (const k of ['name', 'psk', 'mac', 'dlna', 'dialUrl']) if (b[k] !== undefined) d[k] = b[k];
+      for (const k of ['name', 'psk', 'mac', 'dlna', 'dialUrl', 'adbPort']) if (b[k] !== undefined) d[k] = b[k];
       save();
       return publicView(d);
     }],
     ['DELETE', /^\/devices\/(\w+)$/, (b, m) => {
+      adbs.get(m[1])?.close();
+      adbs.delete(m[1]);
       sessions.get(m[1])?.driver.close();
       sessions.delete(m[1]);
       data.devices = data.devices.filter((d) => d.id !== m[1]);
@@ -230,6 +254,29 @@
       if (driver.openUrl) { await driver.openUrl(url); return { via: 'browser' }; }
       throw err(501, 'This TV cannot open links over this connection. Try the Android TV connection.');
     }],
+    ['POST', /^\/devices\/(\w+)\/adb\/connect$/, async (b, m) => {
+      const a = await adbFor(m[1], { fresh: true });
+      return { connected: true, banner: a.banner };
+    }],
+    ['POST', /^\/devices\/(\w+)\/adb\/disconnect$/, (b, m) => {
+      adbs.get(m[1])?.close();
+      adbs.delete(m[1]);
+      const d = getDev(m[1]);
+      if (d) { d.adb = false; save(); }
+    }],
+    ['GET', /^\/devices\/(\w+)\/adb\/screen$/, async (b, m) => A().screenshot(await adbFor(m[1]))],
+    ['POST', /^\/devices\/(\w+)\/adb\/tap$/, async (b, m) => { await A().tap(await adbFor(m[1]), Number(b.x), Number(b.y)); }],
+    ['POST', /^\/devices\/(\w+)\/adb\/swipe$/, async (b, m) => {
+      await A().swipe(await adbFor(m[1]), Number(b.x1), Number(b.y1), Number(b.x2), Number(b.y2), Number(b.ms) || 250);
+    }],
+    ['POST', /^\/devices\/(\w+)\/adb\/text$/, async (b, m) => { await A().text(await adbFor(m[1]), String(b.text || '')); }],
+    ['GET', /^\/devices\/(\w+)\/adb\/apps$/, async (b, m) => A().apps(await adbFor(m[1]))],
+    ['POST', /^\/devices\/(\w+)\/adb\/app$/, async (b, m) => {
+      const a = await adbFor(m[1]);
+      if (b.action === 'stop') await A().stopApp(a, String(b.id)); else await A().openApp(a, String(b.id));
+    }],
+    ['GET', /^\/devices\/(\w+)\/adb\/info$/, async (b, m) => A().info(await adbFor(m[1]))],
+    ['POST', /^\/devices\/(\w+)\/adb\/sleep$/, async (b, m) => { await A().sleepTimer(await adbFor(m[1]), Number(b.minutes) || 0); }],
     ['POST', /^\/devices\/(\w+)\/cast\/control$/, async (b, m) => { await cast.control(dlnaOf(m[1]).dlna, b.action, b.value); }],
     ['GET', /^\/devices\/(\w+)\/cast\/status$/, async (b, m) => cast.status(dlnaOf(m[1]).dlna)],
   ];
@@ -251,6 +298,7 @@
     request,
     onEvent(cb) { listener = cb; },
     keepAwake(on) { return RemoteTv.keepAwake({ on }).catch(() => {}); },
+    saveImage(data, name) { return RemoteTv.saveImage({ data, name }); },
     // Links shared to the app from other apps (Share › RemoteTV).
     onShared(cb) {
       RemoteTv.addListener('shared', (e) => cb(e.text)).catch?.(() => {});

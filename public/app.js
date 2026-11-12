@@ -64,6 +64,7 @@ function buzz(ms = 12) { if (settings.haptic && navigator.vibrate) navigator.vib
 
 function openSheet(html, onMount) {
   airCleanup?.();
+  stopScreen();
   $('#sheetBody').innerHTML = html;
   $('#scrim').classList.remove('hidden');
   requestAnimationFrame(() => $('#sheet').classList.add('open'));
@@ -71,6 +72,7 @@ function openSheet(html, onMount) {
 }
 function closeSheet() {
   airCleanup?.();
+  stopScreen();
   $('#sheet').classList.remove('open');
   $('#scrim').classList.add('hidden');
 }
@@ -286,6 +288,7 @@ function handleEvent(m) {
     if (pendingShare) { const u = pendingShare; pendingShare = null; openOnTv(u); }
   }
   if (m.type === 'error') toast(m.payload, true);
+  if (m.type === 'adbPrompt') adbPromptShown();
 }
 
 function connectWs() {
@@ -517,14 +520,22 @@ function handleShared(text) {
 const sleep = safeJson(localStorage.getItem('remotetv.sleep'));
 let sleepTick;
 function saveSleep() { try { localStorage.setItem('remotetv.sleep', JSON.stringify(sleep)); } catch { /* ignore */ } }
-function startSleep(min) {
+async function startSleep(min) {
   sleep.end = Date.now() + min * 60000;
   sleep.device = dev()?.id;
+  sleep.onTv = false;
+  if (dev()?.adb) {
+    try { await devApi('/adb/sleep', { minutes: min }); sleep.onTv = true; } catch { /* fall back to the phone timer */ }
+  }
   saveSleep();
   runSleep();
-  toast(`TV will turn off in ${min} min`);
+  toast(`TV will turn off in ${min} min${sleep.onTv ? ' (timer runs on the TV)' : ''}`);
 }
-function cancelSleep() { delete sleep.end; saveSleep(); clearInterval(sleepTick); renderStrip(); }
+function cancelSleep(user = false) {
+  if (user && sleep.onTv && sleep.device) api(`/devices/${sleep.device}/adb/sleep`, { body: { minutes: 0 } }).catch(() => {});
+  delete sleep.end; delete sleep.onTv;
+  saveSleep(); clearInterval(sleepTick); renderStrip();
+}
 function sleepLeftText() {
   const m = Math.max(0, Math.ceil((sleep.end - Date.now()) / 60000));
   return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m} min`;
@@ -536,8 +547,9 @@ function runSleep() {
   const tick = async () => {
     if (sleep.end > Date.now()) { $('#sleepLeft').textContent = sleepLeftText(); return; }
     const target = state.devices.find((d) => d.id === sleep.device) || dev();
+    const onTv = sleep.onTv;
     cancelSleep();
-    if (!target) return;
+    if (!target || onTv) return; // the TV switches itself off
     try { await api(`/devices/${target.id}/key`, { body: { key: 'power_off' } }); }
     catch {
       try { await api(`/devices/${target.id}/key`, { body: { key: 'power' } }); }
@@ -556,9 +568,9 @@ function sleepSheet() {
     <p class="sub">${sleep.end ? `The TV turns off in <b>${sleepLeftText()}</b>.` : 'Turn the TV off after:'}</p>
     <div class="choices">${opts.map((m) => `<button class="btn ghost" data-min="${m}">${label(m)}</button>`).join('')}</div>
     ${sleep.end ? '<div class="row gap"><button class="btn danger" id="slCancel">Cancel timer</button></div>' : ''}
-    <p class="sub" style="margin-top:12px">Keep RemoteTV open (the background is fine) and stay on the same Wi-Fi.</p>`, (el) => {
+    <p class="sub" style="margin-top:12px">${dev()?.adb ? 'Advanced mode is on: the TV runs the timer itself, so you can close the app.' : 'Keep RemoteTV open (the background is fine) and stay on the same Wi-Fi.'}</p>`, (el) => {
     $$('[data-min]', el).forEach((b) => b.onclick = () => { closeSheet(); startSleep(Number(b.dataset.min)); });
-    if ($('#slCancel', el)) $('#slCancel', el).onclick = () => { closeSheet(); cancelSleep(); toast('Sleep timer cancelled'); };
+    if ($('#slCancel', el)) $('#slCancel', el).onclick = () => { closeSheet(); cancelSleep(true); toast('Sleep timer cancelled'); };
   });
 }
 $('#sleepChip').onclick = sleepSheet;
@@ -700,6 +712,152 @@ function airMouseSheet() {
   });
 }
 
+// ------------------------------------------------------------ ADB (advanced)
+// Optional mode for Android TVs: the phone talks to the TV's debugging port
+// (5555) to see the screen, tap on it, manage apps and read TV health.
+const adbOk = () => !!(state.info?.adb && dev() && dev().host && dev().type !== 'sony_ir');
+let adbView = null; // live screen loop state
+
+function adbSetupSheet(then) {
+  if (!adbOk()) { toast('ADB mode needs the Android app and a TV added over Wi-Fi', true); return; }
+  openSheet(`<h2>Advanced mode (ADB)</h2>
+    <p class="sub">See the TV screen on your phone, tap on it, take screenshots, open or stop apps and check memory, storage and temperature.</p>
+    <div class="card"><b>On the TV, once:</b>
+      <ol style="margin:8px 0 0;padding-left:20px;line-height:1.6">
+        <li>Settings › Device Preferences › About › press <b>Build</b> 7 times.</li>
+        <li>Settings › Device Preferences › <b>Developer options</b> › turn on <b>USB debugging</b> and, if listed, <b>Network debugging</b> / ADB over network.</li>
+        <li>Tap <b>Connect</b> below, then on the TV tick <b>Always allow</b> and choose <b>OK</b>.</li>
+      </ol></div>
+    <p class="sub" style="margin-top:10px">⚠ While debugging is on, any device on your Wi-Fi that the TV has allowed can control it. Only use this at home, and turn it off in Developer options when you no longer need it.</p>
+    <p class="sub" id="adbMsg" style="margin-top:6px"></p>
+    <div class="row gap"><button class="btn" id="adbGo">Connect</button>${dev().adb ? '<button class="btn danger" id="adbOff">Turn off</button>' : ''}</div>`, (el) => {
+    $('#adbGo', el).onclick = async () => {
+      const btn = $('#adbGo', el);
+      btn.disabled = true; btn.textContent = 'Connecting…';
+      $('#adbMsg', el).textContent = 'Connecting to the TV…';
+      try {
+        await devApi('/adb/connect', {});
+        dev().adb = true;
+        toast('Advanced mode connected ✓');
+        then ? then() : closeSheet();
+      } catch (e) {
+        $('#adbMsg', el).textContent = e.message;
+        btn.disabled = false; btn.textContent = 'Try again';
+      }
+    };
+    if ($('#adbOff', el)) $('#adbOff', el).onclick = async () => { await devApi('/adb/disconnect', {}).catch(() => {}); dev().adb = false; closeSheet(); toast('Advanced mode off'); };
+  });
+}
+// Runs fn once ADB is connected, showing the setup sheet first if needed.
+async function withAdb(fn) {
+  if (!adbOk()) return dev() ? toast('Advanced mode needs the Android app and a Wi-Fi TV', true) : deviceSheet();
+  if (!dev().adb) return adbSetupSheet(fn);
+  fn();
+}
+function adbPromptShown() {
+  const m = $('#adbMsg');
+  if (m) m.innerHTML = '<b>Look at the TV:</b> tick “Always allow from this computer” and choose OK.';
+  else toast('Look at the TV and allow debugging', false);
+}
+
+function screenSheet() {
+  openSheet(`<h2>TV screen</h2>
+    <div class="screen-wrap"><img id="scrImg" alt="TV screen" draggable="false"><div class="screen-msg" id="scrMsg">Loading the TV screen…</div></div>
+    <p class="sub" style="margin-top:6px">Tap the picture to tap on the TV · swipe to scroll. Video apps with copy protection (Netflix…) show black.</p>
+    <div class="row gap screen-btns">
+      <button class="btn ghost" id="scrBack">Back</button><button class="btn ghost" id="scrHome">Home</button>
+      <button class="btn" id="scrLive">Pause</button><button class="btn ghost" id="scrSave">Save</button>
+    </div>`, (el) => {
+    const img = $('#scrImg', el);
+    const msg = $('#scrMsg', el);
+    const view = { live: true, size: null, stop: false, lastPng: null };
+    adbView = view;
+    const load = async () => {
+      if (view.stop) return;
+      try {
+        const s = await devApi('/adb/screen');
+        if (view.stop) return;
+        view.size = { w: s.w, h: s.h };
+        view.lastPng = s.png;
+        img.src = `data:image/png;base64,${s.png}`;
+        msg.classList.add('hidden');
+      } catch (e) {
+        msg.textContent = e.message; msg.classList.remove('hidden');
+        view.live = false; $('#scrLive', el).textContent = 'Live';
+        return;
+      }
+      if (view.live) setTimeout(load, 250);
+    };
+    load();
+    // Touch: tap = input tap, drag = input swipe, in TV pixel coordinates.
+    let start = null;
+    const toTv = (e) => {
+      const r = img.getBoundingClientRect();
+      return { x: ((e.clientX - r.left) / r.width) * view.size.w, y: ((e.clientY - r.top) / r.height) * view.size.h, t: Date.now() };
+    };
+    img.addEventListener('pointerdown', (e) => { if (view.size) { start = toTv(e); img.setPointerCapture(e.pointerId); } });
+    img.addEventListener('pointerup', async (e) => {
+      if (!start || !view.size) return;
+      const end = toTv(e);
+      const s0 = start; start = null;
+      buzz();
+      const far = Math.hypot(end.x - s0.x, end.y - s0.y) > view.size.w * 0.02;
+      try {
+        if (far) await devApi('/adb/swipe', { x1: s0.x, y1: s0.y, x2: end.x, y2: end.y, ms: Math.max(120, Math.min(1500, end.t - s0.t)) });
+        else await devApi('/adb/tap', { x: end.x, y: end.y });
+        if (!view.live) setTimeout(load, 400);
+      } catch (err) { toast(err.message, true); }
+    });
+    $('#scrBack', el).onclick = () => sendKey('back');
+    $('#scrHome', el).onclick = () => sendKey('home');
+    $('#scrLive', el).onclick = (e) => {
+      view.live = !view.live;
+      e.target.textContent = view.live ? 'Pause' : 'Live';
+      if (view.live) load();
+    };
+    $('#scrSave', el).onclick = async () => {
+      if (!view.lastPng) return;
+      try {
+        if (window.NativeBackend?.saveImage) { await window.NativeBackend.saveImage(view.lastPng, `tv-${Date.now()}.png`); toast('Saved to Pictures ✓'); return; }
+        const a = Object.assign(document.createElement('a'), { href: img.src, download: `tv-${Date.now()}.png` });
+        a.click();
+      } catch (err) { toast(err.message, true); }
+    };
+  });
+}
+function stopScreen() { if (adbView) { adbView.stop = true; adbView = null; } }
+
+async function tvAppsSheet() {
+  openSheet('<h2>TV apps</h2><p class="sub">Reading apps from the TV…</p>');
+  try {
+    const apps = await devApi('/adb/apps');
+    const row = (a) => `<div class="item"><div><b>${esc(appLabel(a.id))}</b><small>${esc(a.id)}${a.user ? ' · installed by you' : ''}</small></div>
+      <div class="dev-actions"><button class="btn small" data-open="${esc(a.id)}">Open</button><button class="btn small ghost" data-stop="${esc(a.id)}">Stop</button></div></div>`;
+    $('#sheetBody').innerHTML = `<h2>TV apps</h2><p class="sub">${apps.length} apps. “Stop” force-closes an app that is stuck or using memory.</p>
+      <div class="card list">${apps.map(row).join('')}</div>`;
+    $$('[data-open]').forEach((b) => b.onclick = async () => { try { await devApi('/adb/app', { id: b.dataset.open }); closeSheet(); toast(`Opening ${appLabel(b.dataset.open)}`); } catch (e) { toast(e.message, true); } });
+    $$('[data-stop]').forEach((b) => b.onclick = async () => { try { await devApi('/adb/app', { id: b.dataset.stop, action: 'stop' }); toast(`Stopped ${appLabel(b.dataset.stop)}`); } catch (e) { toast(e.message, true); } });
+  } catch (e) { $('#sheetBody').innerHTML = `<h2>TV apps</h2><p class="sub">${esc(e.message)}</p>`; }
+}
+
+async function tvHealthSheet() {
+  openSheet('<h2>TV health</h2><p class="sub">Reading from the TV…</p>');
+  try {
+    const i = await devApi('/adb/info');
+    const usedMb = i.memTotalMb - i.memFreeMb;
+    const pct = i.memTotalMb ? Math.round((usedMb / i.memTotalMb) * 100) : 0;
+    const up = i.uptimeSec >= 86400 ? `${Math.floor(i.uptimeSec / 86400)} d ${Math.floor((i.uptimeSec % 86400) / 3600)} h` : `${Math.floor(i.uptimeSec / 3600)} h ${Math.floor((i.uptimeSec % 3600) / 60)} min`;
+    const item = (k, v) => `<div class="item"><div><b>${k}</b></div><span>${esc(v ?? '–')}</span></div>`;
+    $('#sheetBody').innerHTML = `<h2>TV health</h2>
+      <div class="card"><b>Memory</b><div class="meter"><div style="width:${pct}%"></div></div><small class="sub">${usedMb} MB used of ${i.memTotalMb} MB (${pct}%)${pct > 85 ? ' — close unused apps (TV apps › Stop)' : ''}</small></div>
+      <div class="card list" style="margin-top:10px">
+        ${item('Model', [i.brand, i.model].filter(Boolean).join(' '))}${item('Android', i.android)}${item('Running for', up)}
+        ${item('Storage free', i.storage ? `${i.storage.free} of ${i.storage.size}` : null)}${item('Temperature', i.tempC ? `${Math.round(i.tempC)} °C` : null)}
+        ${item('On screen', i.topApp ? appLabel(i.topApp) : null)}
+      </div>`;
+  } catch (e) { $('#sheetBody').innerHTML = `<h2>TV health</h2><p class="sub">${esc(e.message)}</p>`; }
+}
+
 // ------------------------------------------------------------ More sheet
 const MORE_ICONS = {
   open: '<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>',
@@ -710,12 +868,17 @@ const MORE_ICONS = {
   keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
   numbers: '<path d="M4 9h16M4 15h16M10 3L8 21M16 3l-2 18"/>',
   simple: '<rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="12" cy="12" r="4"/>',
+  screen: '<rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M10 9l4 2-4 2z"/>',
+  tvapps: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  health: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+  adb: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
 };
 function moreSheet() {
   const items = [['open', 'Open on the TV'], ['sleep', 'Sleep timer'], ['scenes', 'Scenes'], ['air', 'Air Mouse'], ['input', 'Input'],
     ['keyboard', 'Keyboard'], ['numbers', 'Numbers'], ['simple', 'Simple mode'], ['settings', 'TV settings']];
-  const on = (k) => (k === 'simple' && settings.simple) || (k === 'sleep' && sleep.end);
+  if (state.info?.adb) items.push(['screen', 'TV screen'], ['tvapps', 'TV apps'], ['health', 'TV health'], ['adb', 'Advanced (ADB)']);
+  const on = (k) => (k === 'simple' && settings.simple) || (k === 'sleep' && sleep.end) || (k === 'adb' && dev()?.adb);
   openSheet(`<h2>More</h2><div class="more-grid">${items.map(([k, n]) => `<button data-more="${k}" class="${on(k) ? 'on' : ''}"><svg viewBox="0 0 24 24">${MORE_ICONS[k]}</svg>${n}</button>`).join('')}</div>`, (el) => {
     $$('[data-more]', el).forEach((b) => b.onclick = () => {
       const k = b.dataset.more;
@@ -723,6 +886,10 @@ function moreSheet() {
       if (k === 'sleep') return sleepSheet();
       if (k === 'scenes') return scenesSheet();
       if (k === 'air') return airMouseSheet();
+      if (k === 'screen') return withAdb(screenSheet);
+      if (k === 'tvapps') return withAdb(tvAppsSheet);
+      if (k === 'health') return withAdb(tvHealthSheet);
+      if (k === 'adb') return adbSetupSheet();
       if (k === 'keyboard') return (dev() ? keyboardSheet() : deviceSheet());
       if (k === 'numbers') return $('#btnNumpad').click();
       if (k === 'simple') {
@@ -845,7 +1012,7 @@ function loadScript(src) {
 
 (async function boot() {
   if (NATIVE) {
-    for (const src of ['vendor/forge.min.js', 'vendor/protobuf.min.js', 'vendor/protos.js', 'native/drivers.js', 'native/backend.js']) await loadScript(src);
+    for (const src of ['vendor/forge.min.js', 'vendor/protobuf.min.js', 'vendor/protos.js', 'native/drivers.js', 'native/adb.js', 'native/backend.js']) await loadScript(src);
     document.body.classList.add('native');
   }
   applySettings();

@@ -1,5 +1,5 @@
 // App-shell cache so the remote opens instantly; API calls always go to the network.
-const CACHE = 'remotetv-v2';
+const CACHE = 'remotetv-v3';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'icon.svg', 'manifest.webmanifest'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener('activate', (e) => {

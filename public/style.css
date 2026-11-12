@@ -225,3 +225,12 @@ body.simple .dpad .d svg { width: 38px; height: 38px; }
 body.simple .dpad .ok { font-size: 22px; }
 body.simple .rlabel { font-size: 13px; }
 body.simple .rlabel b { font-size: 26px; }
+
+/* ---------- phase 2: ADB screen view, health meter */
+.screen-wrap { position: relative; margin-top: 8px; border-radius: 14px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; border: 1px solid var(--line); }
+.screen-wrap img { width: 100%; height: 100%; object-fit: contain; display: block; touch-action: none; user-select: none; -webkit-user-select: none; }
+.screen-msg { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; color: var(--muted); font-size: 14px; }
+.screen-btns { flex-wrap: wrap; }
+.screen-btns .btn { flex: 1; }
+.meter { height: 10px; border-radius: 999px; background: var(--panel-2); overflow: hidden; margin: 10px 0 6px; }
+.meter div { height: 100%; background: linear-gradient(90deg, var(--ok), var(--warn)); }

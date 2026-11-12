@@ -108,6 +108,16 @@ function mockPlugin() {
       });
       s.once('error', reject);
     }),
+    tcpConnect: ({ host, port }) => new Promise((resolve, reject) => {
+      const s = require('net').connect({ host, port }, () => {
+        const id = next++;
+        conns.set(id, s);
+        s.on('data', (d) => fire('tlsData', { id, data: d.toString('base64') }));
+        s.on('close', () => fire('tlsClose', { id }));
+        resolve({ id });
+      });
+      s.once('error', reject);
+    }),
     tlsWrite: async ({ id, data }) => { conns.get(id).write(Buffer.from(data, 'base64')); },
     tlsClose: async ({ id }) => { conns.get(id)?.destroy(); },
     ssdpSearch: async () => ({ responses: [] }),
@@ -124,10 +134,10 @@ function loadApp(plugin) {
   };
   const ctx = vm.createContext({
     window, fetch, crypto: globalThis.crypto, btoa, atob, URL, URLSearchParams, AbortController, setTimeout, clearTimeout,
-    setInterval, clearInterval, console, Uint8Array, TextEncoder,
+    setInterval, clearInterval, console, Uint8Array, TextEncoder, TextDecoder,
     localStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) },
   });
-  for (const f of ['native/drivers.js', 'native/backend.js']) vm.runInContext(fs.readFileSync(path.join(root, 'public', f), 'utf8'), ctx, { filename: f });
+  for (const f of ['native/drivers.js', 'native/adb.js', 'native/backend.js']) vm.runInContext(fs.readFileSync(path.join(root, 'public', f), 'utf8'), ctx, { filename: f });
   return window.NativeBackend;
 }
 
@@ -254,4 +264,122 @@ test('APK infra-red mode sends Sony SIRC patterns through the phone IR emitter',
   const noIr = loadApp({ ...mockPlugin(), irInfo: async () => ({ hasIr: false }) });
   const d2 = await noIr.request('POST', '/devices', { type: 'sony_ir' });
   await assert.rejects(noIr.request('POST', `/devices/${d2.id}/connect`, {}), /no infra-red/);
+});
+
+// ------------------------------------------------------------ fake ADB TV
+function fakeAdbTv() {
+  const CMD = { CNXN: 0x4e584e43, AUTH: 0x48545541, OPEN: 0x4e45504f, OKAY: 0x59414b4f, CLSE: 0x45534c43, WRTE: 0x45545257 };
+  const tv = { allowed: [], prompts: 0, commands: [] };
+  // Android RSAPublicKey struct -> Node public key (also checks n0inv and e).
+  const parseKey = (b64) => {
+    const raw = Buffer.from(b64, 'base64');
+    const words = raw.readUInt32LE(0);
+    const n = Buffer.alloc(words * 4);
+    for (let i = 0; i < words * 4; i++) n[words * 4 - 1 - i] = raw[8 + i];
+    const n0 = BigInt(raw.readUInt32LE(8));
+    assert.equal((n0 * BigInt(raw.readUInt32LE(4))) % 2n ** 32n, 2n ** 32n - 1n, 'n0inv');
+    assert.equal(raw.readUInt32LE(8 + words * 8), 65537);
+    return crypto.createPublicKey({ key: { kty: 'RSA', n: n.toString('base64url'), e: 'AQAB' }, format: 'jwk' });
+  };
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), Buffer.from('IHDR'),
+    Buffer.from([0, 0, 7, 128, 0, 0, 4, 56]), crypto.randomBytes(300000)]);
+  tv.server = require('net').createServer((sock) => {
+    let buf = Buffer.alloc(0);
+    let token;
+    const send = (cmd, a0, a1, data = Buffer.alloc(0)) => {
+      const h = Buffer.alloc(24);
+      h.writeUInt32LE(cmd, 0); h.writeUInt32LE(a0 >>> 0, 4); h.writeUInt32LE(a1 >>> 0, 8); h.writeUInt32LE(data.length, 12);
+      h.writeUInt32LE(0, 16); h.writeUInt32LE((cmd ^ 0xffffffff) >>> 0, 20);
+      sock.write(Buffer.concat([h, data]));
+    };
+    const authToken = () => { token = crypto.randomBytes(20); send(CMD.AUTH, 1, 0, token); };
+    const reply = (local, out) => {
+      send(CMD.OKAY, 99, local);
+      for (let i = 0; i < out.length; i += 4096) send(CMD.WRTE, 99, local, out.subarray(i, i + 4096));
+      send(CMD.CLSE, 99, local);
+    };
+    sock.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      while (buf.length >= 24) {
+        const len = buf.readUInt32LE(12);
+        if (buf.length < 24 + len) return;
+        const cmd = buf.readUInt32LE(0);
+        const a0 = buf.readUInt32LE(4);
+        const data = buf.subarray(24, 24 + len);
+        let sum = 0;
+        for (const b of data) sum = (sum + b) >>> 0;
+        assert.equal(buf.readUInt32LE(16), sum, 'checksum');
+        assert.equal(buf.readUInt32LE(20), (cmd ^ 0xffffffff) >>> 0, 'magic');
+        buf = buf.subarray(24 + len);
+        if (cmd === CMD.CNXN) authToken();
+        else if (cmd === CMD.AUTH && a0 === 2) {
+          const ok = tv.allowed.some((k) => {
+            try { return crypto.publicDecrypt({ key: k, padding: crypto.constants.RSA_PKCS1_PADDING }, data).subarray(-20).equals(token); } catch { return false; }
+          });
+          if (ok) send(CMD.CNXN, 0x01000001, 4096, Buffer.from('device::ro.product.model=FakeBravia;'));
+          else authToken();
+        } else if (cmd === CMD.AUTH && a0 === 3) {
+          tv.prompts++;
+          tv.allowed.push(parseKey(data.toString('utf8').split(' ')[0])); // the user taps "Always allow"
+          send(CMD.CNXN, 0x01000001, 4096, Buffer.from('device::ro.product.model=FakeBravia;'));
+        } else if (cmd === CMD.OPEN) {
+          const service = data.toString('utf8').replace(/\0$/, '');
+          tv.commands.push(service);
+          const c = service.replace(/^exec:/, '');
+          let out = '';
+          if (c === 'screencap -p') { reply(a0, png); continue; }
+          if (c.startsWith('cmd package query-activities')) out = 'packageName=com.google.android.youtube.tv\n  packageName=com.netflix.ninja\n';
+          else if (c === 'pm list packages -3') out = 'package:com.netflix.ninja\n';
+          else if (c.includes('getprop ro.product.model')) {
+            out = 'model=KD-55X7500F\nbrand=Sony\nandroid=9\nuptime=3600\nMemTotal:        1918000 kB\nMemAvailable:     712000 kB\ntemp=48000\n'
+              + '/dev/block/dm-0   9.6G  4.2G  5.4G  44% /data\n  mResumedActivity: ActivityRecord{1 u0 com.google.android.youtube.tv/.MainActivity t1}\n';
+          }
+          reply(a0, Buffer.from(out));
+        }
+      }
+    });
+  });
+  return tv;
+}
+
+test('APK ADB mode: authorises once, then screenshots, taps, apps and TV info', async (t) => {
+  const tv = fakeAdbTv();
+  const port = await listen(tv.server);
+  t.after(() => tv.server.close());
+  const be = loadApp(mockPlugin());
+  const events = [];
+  be.onEvent((e) => events.push(e));
+  assert.equal((await be.request('GET', '/info')).adb, true);
+  const dev = await be.request('POST', '/devices', { host: '127.0.0.1', type: 'androidtv', name: 'Bravia' });
+  await be.request('PATCH', `/devices/${dev.id}`, { adbPort: port }); // point ADB at the fake TV
+
+  const c = await be.request('POST', `/devices/${dev.id}/adb/connect`, {});
+  assert.equal(c.connected, true);
+  assert.match(c.banner, /FakeBravia/);
+  assert.equal(tv.prompts, 1, 'TV showed the "Allow debugging" prompt once');
+  assert.ok(events.some((e) => e.type === 'adbPrompt'));
+
+  const shot = await be.request('GET', `/devices/${dev.id}/adb/screen`);
+  assert.deepEqual([shot.w, shot.h], [1920, 1080]);
+  assert.ok(Buffer.from(shot.png, 'base64').length > 300000, 'large screenshot reassembled from many chunks');
+
+  await be.request('POST', `/devices/${dev.id}/adb/tap`, { x: 960.4, y: 540 });
+  await be.request('POST', `/devices/${dev.id}/adb/app`, { id: 'com.netflix.ninja', action: 'stop' });
+  await assert.rejects(be.request('POST', `/devices/${dev.id}/adb/app`, { id: 'x; reboot', action: 'stop' }), /Bad package/);
+  const apps = await be.request('GET', `/devices/${dev.id}/adb/apps`);
+  assert.deepEqual(apps, [{ id: 'com.google.android.youtube.tv', user: false }, { id: 'com.netflix.ninja', user: true }]);
+  const info = await be.request('GET', `/devices/${dev.id}/adb/info`);
+  assert.equal(info.model, 'KD-55X7500F');
+  assert.equal(info.memTotalMb, 1873);
+  assert.equal(info.tempC, 48);
+  assert.equal(info.topApp, 'com.google.android.youtube.tv');
+  assert.deepEqual(info.storage, { size: '9.6G', used: '4.2G', free: '5.4G' });
+  assert.ok(tv.commands.includes('exec:input tap 960 540'));
+  assert.ok(tv.commands.includes('exec:am force-stop com.netflix.ninja'));
+
+  // Reconnecting reuses the allowed key: no second prompt on the TV.
+  await be.request('POST', `/devices/${dev.id}/adb/disconnect`, {});
+  await be.request('POST', `/devices/${dev.id}/adb/connect`, {});
+  assert.equal(tv.prompts, 1);
+  await be.request('DELETE', `/devices/${dev.id}`);
 });

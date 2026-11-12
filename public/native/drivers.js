@@ -494,5 +494,6 @@
     close() {}
   }
 
-  window.NativeTv = { RemoteTv, req, xmlTag, drivers: { sony: Sony, roku: Roku, androidtv: AndroidTv, sony_ir: SonyIr }, cast, ir: { irccToSirc, sircPattern, SONY_IR } };
+  window.NativeTv = { RemoteTv, req, xmlTag, drivers: { sony: Sony, roku: Roku, androidtv: AndroidTv, sony_ir: SonyIr }, cast, ir: { irccToSirc, sircPattern, SONY_IR },
+    net: { listenSockets, sockets, u8ToB64, b64ToU8, clientIdentity } };
 })();
