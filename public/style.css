@@ -237,3 +237,17 @@ body.simple .rlabel b { font-size: 26px; }
 
 /* ---------- shop TV switch */
 .shop-switch { margin-bottom: 4px; padding: 12px 14px; }
+
+/* ---------- draw on TV */
+.draw-wrap { position: relative; margin-top: 8px; border-radius: 14px; overflow: hidden; border: 1px solid var(--line);
+  background: #111 repeating-linear-gradient(0deg, transparent 0 23px, rgba(255,255,255,.04) 23px 24px),
+              repeating-linear-gradient(90deg, transparent 0 23px, rgba(255,255,255,.04) 23px 24px); }
+.draw-wrap img, .draw-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.draw-wrap img { object-fit: contain; opacity: .7; }
+.draw-wrap canvas { touch-action: none; cursor: crosshair; }
+.draw-tools { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.swatch { width: 32px; height: 32px; border-radius: 50%; background: var(--c); border: 2px solid rgba(255,255,255,.25); flex: none; }
+.swatch.on { outline: 3px solid var(--accent-2); outline-offset: 2px; }
+.draw-tools select { margin-left: auto; }
+.draw-btns { flex-wrap: wrap; }
+.draw-btns .btn { flex: 1; }

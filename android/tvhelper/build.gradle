@@ -1,0 +1,37 @@
+apply plugin: 'com.android.application'
+
+// RemoteTV TV Helper: a tiny app installed on the TV. It listens on port 7333
+// for a paired phone and draws its strokes and messages on top of whatever the
+// TV is showing ("Draw on TV"). No AndroidX, so the APK stays small.
+android {
+    namespace = "io.github.imuhakim.remotetv.tv"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "io.github.imuhakim.remotetv.tv"
+        minSdkVersion 21
+        targetSdkVersion 33
+        versionCode((System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger())
+        versionName "1.1." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
+    }
+    signingConfigs {
+        release {
+            def ks = System.getenv("RTV_KEYSTORE")
+            if (ks) {
+                storeFile file(ks)
+                storePassword System.getenv("RTV_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("RTV_KEY_ALIAS")
+                keyPassword System.getenv("RTV_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+    buildTypes {
+        release {
+            signingConfig System.getenv("RTV_KEYSTORE") ? signingConfigs.release : signingConfigs.debug
+            minifyEnabled false
+        }
+    }
+}

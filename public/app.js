@@ -865,6 +865,182 @@ async function tvHealthSheet() {
   } catch (e) { $('#sheetBody').innerHTML = `<h2>TV health</h2><p class="sub">${esc(e.message)}</p>`; }
 }
 
+// ------------------------------------------------------------ draw on TV
+// Needs the small "RemoteTV Helper" app on the TV (android/tvhelper). Strokes
+// are sent live as 0..1 coordinates and drawn above whatever the TV shows.
+const DRAW_COLORS = ['#ff3b30', '#ffcc00', '#34c759', '#0a84ff', '#ffffff', '#000000'];
+const draw = { color: DRAW_COLORS[0], size: 0.006, id: 1, queue: Promise.resolve(), pendingText: null };
+
+function drawSend(ops) {
+  draw.queue = draw.queue.then(() => devApi('/draw/send', { ops })).catch((e) => toast(e.message, true));
+  return draw.queue;
+}
+
+async function drawOnTv() {
+  if (!state.info?.draw) return toast('Draw on TV needs the RemoteTV Android app', true);
+  if (!dev() || /^infra-red/.test(dev().host || '')) return dev() ? toast('Draw on TV needs a TV added over Wi-Fi', true) : deviceSheet();
+  openSheet('<h2>Draw on TV</h2><p class="sub">Connecting to RemoteTV Helper on the TV…</p>');
+  try {
+    const r = await devApi('/draw/connect', {});
+    if (r.paired) drawCanvasSheet(r);
+    else drawPairSheet(r);
+  } catch (e) {
+    if (/not running|Install it first/i.test(e.message)) helperInstallSheet();
+    else if (/not allowed to draw/i.test(e.message)) helperInstallSheet(e.message);
+    else $('#sheetBody').innerHTML = `<h2>Draw on TV</h2><p class="sub">${esc(e.message)}</p>`;
+  }
+}
+
+function drawPairSheet(size) {
+  openSheet(`<h2>Pair with the TV</h2><p class="sub">A 6-digit code is now on the TV screen. Type it here (only needed once).</p>
+    <div class="row gap"><input id="dCode" inputmode="numeric" maxlength="7" autocomplete="one-time-code" style="font-size:22px;letter-spacing:.3em;text-align:center"><button class="btn" id="dGo">Pair</button></div>`, (el) => {
+    const input = $('#dCode', el);
+    setTimeout(() => input.focus(), 250);
+    const go = async () => {
+      try { await devApi('/draw/pair', { code: input.value }); toast('Paired ✓'); drawCanvasSheet(size); }
+      catch (e) { toast(e.message, true); }
+    };
+    $('#dGo', el).onclick = go;
+    input.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+  });
+}
+
+function helperInstallSheet(reason) {
+  const viaAdb = adbOk();
+  openSheet(`<h2>Install RemoteTV Helper</h2>
+    <p class="sub">${esc(reason || 'Drawing on the TV needs a small helper app on the TV (one time).')}</p>
+    ${viaAdb ? `<div class="card"><b>Easiest: install from this phone</b><small class="sub" style="display:block;margin-top:4px">Uses Advanced mode (ADB). It also allows the helper to draw over other apps.</small>
+      <div class="row gap"><button class="btn" id="hAdb">${dev().adb ? 'Install on the TV now' : 'Set up Advanced mode, then install'}</button></div><p class="sub" id="hMsg"></p></div>` : ''}
+    <div class="card" style="margin-top:10px"><b>Or install on the TV by hand</b>
+      <ol style="margin:8px 0 0;padding-left:20px;line-height:1.6">
+        <li>On the TV install <b>Downloader</b> from the Play Store.</li>
+        <li>In Downloader open <b>github.com/imuhakim/remotetv/releases/latest</b> and install <b>RemoteTV-TVHelper-…apk</b>.</li>
+        <li>Open <b>RemoteTV Helper</b> on the TV and choose <b>Allow drawing over other apps</b>.</li>
+      </ol></div>
+    <div class="row gap"><button class="btn ghost" id="hRetry">Try again</button></div>`, (el) => {
+    $('#hRetry', el).onclick = drawOnTv;
+    const btn = $('#hAdb', el);
+    if (!btn) return;
+    const install = async () => {
+      const msg = $('#hMsg');
+      try {
+        if (msg) msg.textContent = 'Installing on the TV… (about 10 seconds)';
+        const r = await devApi('/adb/install-helper', {});
+        toast(r.started ? 'Helper installed ✓' : 'Installed. Open RemoteTV Helper once on the TV.');
+        setTimeout(drawOnTv, 1500);
+      } catch (e) { if (msg) msg.textContent = e.message; else toast(e.message, true); }
+    };
+    btn.onclick = () => (dev().adb ? install() : adbSetupSheet(() => helperInstallSheet()));
+  });
+}
+
+function drawCanvasSheet(size) {
+  const ratio = size?.w && size?.h ? size.w / size.h : 16 / 9;
+  openSheet(`<h2>Draw on TV</h2>
+    <div class="draw-wrap" style="aspect-ratio:${ratio}"><img id="dBg" alt="" class="hidden"><canvas id="dCanvas"></canvas></div>
+    <div class="draw-tools">
+      ${DRAW_COLORS.map((c) => `<button class="swatch${c === draw.color ? ' on' : ''}" data-color="${c}" style="--c:${c}" aria-label="Colour ${c}"></button>`).join('')}
+      <select id="dSize" aria-label="Pen size"><option value="0.003">Thin</option><option value="0.006">Medium</option><option value="0.012">Thick</option><option value="0.025">Marker</option></select>
+    </div>
+    <div class="row gap draw-btns">
+      <button class="btn ghost" id="dUndo">Undo</button><button class="btn ghost" id="dClear">Clear</button>
+      <button class="btn ghost" id="dText">Text</button><button class="btn ghost" id="dMsg">Message</button>
+    </div>
+    <div class="row gap draw-btns">
+      ${dev().adb ? '<button class="btn ghost" id="dPic">TV picture</button>' : ''}<button class="btn danger" id="dHide">Remove from TV</button>
+    </div>
+    <p class="sub" style="margin-top:6px">Your drawing appears on top of whatever the TV is showing.</p>`, (el) => {
+    const cv = $('#dCanvas', el);
+    const ctx = cv.getContext('2d');
+    const strokes = []; // local mirror for undo / redraw
+    const fit = () => {
+      const r = cv.getBoundingClientRect();
+      cv.width = Math.round(r.width * devicePixelRatio);
+      cv.height = Math.round(r.height * devicePixelRatio);
+      redraw();
+    };
+    const redraw = () => {
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      for (const s of strokes) {
+        if (s.text) {
+          ctx.fillStyle = s.c; ctx.font = `bold ${s.s * cv.height}px sans-serif`; ctx.fillText(s.text, s.x * cv.width, s.y * cv.height);
+          continue;
+        }
+        ctx.strokeStyle = s.c; ctx.lineWidth = Math.max(1.5, s.w * cv.width); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath();
+        s.pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * cv.width, y * cv.height) : ctx.moveTo(x * cv.width, y * cv.height)));
+        if (s.pts.length === 1) ctx.lineTo(s.pts[0][0] * cv.width + 0.1, s.pts[0][1] * cv.height);
+        ctx.stroke();
+      }
+    };
+    requestAnimationFrame(fit);
+    const pos = (e) => {
+      const r = cv.getBoundingClientRect();
+      return [Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), Math.max(0, Math.min(1, (e.clientY - r.top) / r.height))];
+    };
+    let cur = null, buf = [], flushT = null;
+    const flush = () => {
+      clearTimeout(flushT); flushT = null;
+      if (cur && buf.length) { drawSend([{ t: 'move', id: cur.id, p: buf.flat().map((v) => Math.round(v * 10000) / 10000) }]); buf = []; }
+    };
+    cv.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      const [x, y] = pos(e);
+      if (draw.pendingText) {
+        const t = { text: draw.pendingText, x, y, c: draw.color, s: 0.07 };
+        draw.pendingText = null;
+        strokes.push(t); redraw();
+        drawSend([{ t: 'text', text: t.text, x, y, c: t.c, s: t.s }]);
+        return;
+      }
+      cv.setPointerCapture(e.pointerId);
+      cur = { id: draw.id++, c: draw.color, w: draw.size, pts: [[x, y]] };
+      strokes.push(cur);
+      redraw();
+      drawSend([{ t: 'begin', id: cur.id, c: cur.c, w: cur.w, x, y }]);
+    });
+    cv.addEventListener('pointermove', (e) => {
+      if (!cur) return;
+      const p = pos(e);
+      cur.pts.push(p);
+      buf.push(p);
+      redraw();
+      if (!flushT) flushT = setTimeout(flush, 40);
+    });
+    const end = () => { if (!cur) return; flush(); drawSend([{ t: 'end', id: cur.id }]); cur = null; };
+    cv.addEventListener('pointerup', end);
+    cv.addEventListener('pointercancel', end);
+
+    $$('[data-color]', el).forEach((b) => b.onclick = () => {
+      draw.color = b.dataset.color;
+      $$('[data-color]', el).forEach((x) => x.classList.toggle('on', x === b));
+    });
+    const sizeSel = $('#dSize', el);
+    sizeSel.value = String(draw.size);
+    sizeSel.onchange = () => { draw.size = Number(sizeSel.value); };
+    $('#dUndo', el).onclick = () => { strokes.pop(); redraw(); drawSend([{ t: 'undo' }]); };
+    $('#dClear', el).onclick = () => { strokes.length = 0; redraw(); drawSend([{ t: 'clear' }]); };
+    $('#dHide', el).onclick = () => { strokes.length = 0; redraw(); drawSend([{ t: 'hide' }]); toast('Removed from the TV'); };
+    $('#dText', el).onclick = () => {
+      const t = prompt('Text to put on the TV');
+      if (t && t.trim()) { draw.pendingText = t.trim().slice(0, 80); toast('Now tap where the text should go'); }
+    };
+    $('#dMsg', el).onclick = () => {
+      const t = prompt('Message to show on the TV (20 seconds)');
+      if (t && t.trim()) { drawSend([{ t: 'msg', text: t.trim().slice(0, 200), secs: 20 }]); toast('Message shown on the TV'); }
+    };
+    const pic = $('#dPic', el);
+    if (pic) pic.onclick = async () => {
+      try {
+        const s = await devApi('/adb/screen');
+        const img = $('#dBg', el);
+        img.src = `data:image/png;base64,${s.png}`;
+        img.classList.remove('hidden');
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+}
+
 // ------------------------------------------------------------ More sheet
 const MORE_ICONS = {
   open: '<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>',
@@ -875,6 +1051,7 @@ const MORE_ICONS = {
   keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
   numbers: '<path d="M4 9h16M4 15h16M10 3L8 21M16 3l-2 18"/>',
   simple: '<rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="12" cy="12" r="4"/>',
+  draw: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
   screen: '<rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M10 9l4 2-4 2z"/>',
   tvapps: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   health: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
@@ -882,7 +1059,7 @@ const MORE_ICONS = {
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
 };
 function moreSheet() {
-  const items = [['open', 'Open on the TV'], ['sleep', 'Sleep timer'], ['scenes', 'Scenes'], ['air', 'Air Mouse'], ['input', 'Input'],
+  const items = [['open', 'Open on the TV'], ...(state.info?.draw ? [['draw', 'Draw on TV']] : []), ['sleep', 'Sleep timer'], ['scenes', 'Scenes'], ['air', 'Air Mouse'], ['input', 'Input'],
     ['keyboard', 'Keyboard'], ['numbers', 'Numbers'], ['simple', 'Simple mode'], ['settings', 'TV settings']];
   if (state.info?.adb) items.push(['screen', 'TV screen'], ['tvapps', 'TV apps'], ['health', 'TV health'], ['adb', 'Advanced (ADB)']);
   const on = (k) => (k === 'simple' && settings.simple) || (k === 'sleep' && sleep.end) || (k === 'adb' && dev()?.adb);
@@ -890,6 +1067,7 @@ function moreSheet() {
     $$('[data-more]', el).forEach((b) => b.onclick = () => {
       const k = b.dataset.more;
       if (k === 'open') return openLinkSheet();
+      if (k === 'draw') return drawOnTv();
       if (k === 'sleep') return sleepSheet();
       if (k === 'scenes') return scenesSheet();
       if (k === 'air') return airMouseSheet();
@@ -1019,7 +1197,7 @@ function loadScript(src) {
 
 (async function boot() {
   if (NATIVE) {
-    for (const src of ['vendor/forge.min.js', 'vendor/protobuf.min.js', 'vendor/protos.js', 'native/drivers.js', 'native/adb.js', 'native/backend.js']) await loadScript(src);
+    for (const src of ['vendor/forge.min.js', 'vendor/protobuf.min.js', 'vendor/protos.js', 'native/drivers.js', 'native/adb.js', 'native/helper.js', 'native/backend.js']) await loadScript(src);
     document.body.classList.add('native');
   }
   applySettings();

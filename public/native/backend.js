@@ -23,7 +23,7 @@
     save();
   }
   const getDev = (id) => data.devices.find((d) => d.id === id);
-  const publicView = (d) => ({ ...d, psk: d.psk ? '••••' : undefined });
+  const publicView = (d) => ({ ...d, psk: d.psk ? '••••' : undefined, helperToken: undefined, helperPaired: !!d.helperToken });
 
   // ------------------------------------------------------------- sessions
   const sessions = new Map();
@@ -83,6 +83,27 @@
     return a;
   }
   const A = () => window.NativeAdb.features;
+
+  // ------------------------------------------- TV Helper ("Draw on TV")
+  const helpers = new Map(); // deviceId -> NativeHelper.HelperLink
+  async function helperFor(id, { fresh = false } = {}) {
+    const d = getDev(id);
+    if (!d) throw err(404, 'Unknown device');
+    if (!window.NativeHelper) throw err(501, 'Draw on TV is not available in this build');
+    let h = helpers.get(id);
+    if (h && !h.closed && !fresh) return h;
+    h?.close();
+    h = new window.NativeHelper.HelperLink(d.host, d.helperPort || window.NativeHelper.PORT);
+    try { await h.open(); } catch (e) { throw err(503, e.message); }
+    helpers.set(id, h);
+    const r = await h.request({ t: 'hello', token: d.helperToken || '', name: 'RemoteTV phone' });
+    h.paired = !!r.paired;
+    h.size = { w: r.w, h: r.h };
+    h.overlay = !!r.overlay;
+    if (!r.paired && d.helperToken) { delete d.helperToken; save(); } // the TV forgot this phone
+    return h;
+  }
+  const OVERLAY_OFF = 'The RemoteTV Helper on the TV is not allowed to draw over other apps yet. On the TV open RemoteTV Helper › "Allow drawing over other apps", or use Advanced (ADB) › Install TV helper, which allows it automatically.';
 
   function mediaMime(url) {
     const ext = url.split(/[?#]/)[0].split('.').pop().toLowerCase();
@@ -148,7 +169,7 @@
   const routes = [
     ['GET', /^\/info$/, async () => {
       const ir = await Promise.resolve().then(() => RemoteTv.irInfo()).catch(() => ({ hasIr: false }));
-      return { keys: KEYS, hub: 'This phone (no hub needed)', native: true, adb: !!window.NativeAdb, hasIr: !!ir.hasIr, lastDeviceId: data.lastDeviceId };
+      return { keys: KEYS, hub: 'This phone (no hub needed)', native: true, adb: !!window.NativeAdb, draw: !!window.NativeHelper, hasIr: !!ir.hasIr, lastDeviceId: data.lastDeviceId };
     }],
     ['GET', /^\/discover$/, (b, m, q) => discover(Number(q.get('timeout')) || 3500)],
     ['GET', /^\/devices$/, () => (purgeExpired(), data.devices).map((d) => ({ ...publicView(d), status: sessions.get(d.id)?.status || 'idle', state: sessions.get(d.id)?.state || {} }))],
@@ -174,13 +195,15 @@
     ['PATCH', /^\/devices\/(\w+)$/, (b, m) => {
       const d = getDev(m[1]);
       if (!d) throw err(404, 'Unknown device');
-      for (const k of ['name', 'psk', 'mac', 'dlna', 'dialUrl', 'adbPort']) if (b[k] !== undefined) d[k] = b[k];
+      for (const k of ['name', 'psk', 'mac', 'dlna', 'dialUrl', 'adbPort', 'helperPort']) if (b[k] !== undefined) d[k] = b[k];
       save();
       return publicView(d);
     }],
     ['DELETE', /^\/devices\/(\w+)$/, (b, m) => {
       adbs.get(m[1])?.close();
       adbs.delete(m[1]);
+      helpers.get(m[1])?.close();
+      helpers.delete(m[1]);
       sessions.get(m[1])?.driver.close();
       sessions.delete(m[1]);
       data.devices = data.devices.filter((d) => d.id !== m[1]);
@@ -294,6 +317,42 @@
     }],
     ['GET', /^\/devices\/(\w+)\/adb\/info$/, async (b, m) => A().info(await adbFor(m[1]))],
     ['POST', /^\/devices\/(\w+)\/adb\/sleep$/, async (b, m) => { await A().sleepTimer(await adbFor(m[1]), Number(b.minutes) || 0); }],
+    ['GET', /^\/devices\/(\w+)\/adb\/helper$/, async (b, m) => A().helperState(await adbFor(m[1]))],
+    ['POST', /^\/devices\/(\w+)\/adb\/install-helper$/, async (b, m) => {
+      const a = await adbFor(m[1]);
+      let asset;
+      try { asset = await RemoteTv.readAsset({ path: 'tvhelper.apk' }); } catch { throw err(501, 'The TV helper is not bundled in this build of the app'); }
+      const bin = atob(asset.data);
+      const apk = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) apk[i] = bin.charCodeAt(i);
+      return A().installHelper(a, apk);
+    }],
+
+    // Draw on TV (needs the RemoteTV Helper app on the TV)
+    ['POST', /^\/devices\/(\w+)\/draw\/connect$/, async (b, m) => {
+      const h = await helperFor(m[1], { fresh: true });
+      if (!h.overlay) throw err(409, OVERLAY_OFF);
+      return { paired: h.paired, w: h.size.w, h: h.size.h };
+    }],
+    ['POST', /^\/devices\/(\w+)\/draw\/pair$/, async (b, m) => {
+      const h = helpers.get(m[1]);
+      if (!h || h.closed) throw err(409, 'Open Draw on TV again to get a new code');
+      const r = await h.request({ t: 'pair', code: String(b.code || '').replace(/\D/g, '') });
+      if (!r.ok) throw err(403, r.error || 'Wrong code');
+      const d = getDev(m[1]);
+      d.helperToken = r.token;
+      save();
+      h.paired = true;
+      return { paired: true };
+    }],
+    ['POST', /^\/devices\/(\w+)\/draw\/send$/, async (b, m) => {
+      let h = helpers.get(m[1]);
+      if (!h || h.closed) h = await helperFor(m[1]);
+      if (!h.paired) throw err(409, 'Pair with the TV first');
+      const ok = new Set(['begin', 'move', 'end', 'undo', 'clear', 'hide', 'text', 'msg']);
+      const ops = (Array.isArray(b.ops) ? b.ops : []).filter((o) => o && ok.has(o.t)).slice(0, 300);
+      if (ops.length) await h.write(ops);
+    }],
     ['POST', /^\/devices\/(\w+)\/cast\/control$/, async (b, m) => { await cast.control(dlnaOf(m[1]).dlna, b.action, b.value); }],
     ['GET', /^\/devices\/(\w+)\/cast\/status$/, async (b, m) => cast.status(dlnaOf(m[1]).dlna)],
   ];

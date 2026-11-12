@@ -434,6 +434,27 @@ public class RemoteTvPlugin extends Plugin {
         }).start();
     }
 
+    // ------------------------------------------------------- bundled files
+    /** Reads a file packaged in the app's assets (e.g. "tvhelper.apk") as base64. */
+    @PluginMethod
+    public void readAsset(PluginCall call) {
+        final String path = call.getString("path", "");
+        if (path.contains("..")) { call.reject("Bad path"); return; }
+        new Thread(() -> {
+            try (InputStream in = getContext().getAssets().open(path)) {
+                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+                JSObject r = new JSObject();
+                r.put("data", Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP));
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject("Not bundled in this build: " + path);
+            }
+        }).start();
+    }
+
     // ------------------------------------------------------ save screenshot
     /** Saves a base64 PNG to Pictures/RemoteTV (MediaStore on Android 10+, app folder before). */
     @PluginMethod

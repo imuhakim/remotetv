@@ -84,8 +84,14 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleRelease
+          # The TV Helper is built first and bundled inside the phone app, so the
+          # phone can install it on the TV over ADB.
+          ./gradlew --no-daemon :tvhelper:assembleRelease
+          mkdir -p app/src/main/assets
+          cp tvhelper/build/outputs/apk/release/tvhelper-release.apk app/src/main/assets/tvhelper.apk
+          ./gradlew --no-daemon :app:assembleRelease
           cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/RemoteTV-v1.1.${{ github.run_number }}.apk"
+          cp tvhelper/build/outputs/apk/release/tvhelper-release.apk "$GITHUB_WORKSPACE/RemoteTV-TVHelper-v1.1.${{ github.run_number }}.apk"
 
       # Signed proof that this APK was built by this workflow from this commit.
       # Check with: gh attestation verify RemoteTV-v1.1.N.apk -R imuhakim/remotetv
@@ -108,5 +114,6 @@ jobs:
           files: RemoteTV-*.apk
           body: |
             Install on your Android phone: download **RemoteTV-v1.1.${{ github.run_number }}.apk** below, open it and allow "Install unknown apps" for your browser.
+            **RemoteTV-TVHelper** is the small app for the TV that makes *Draw on TV* work. The phone app can install it for you (Advanced mode), or install it on the TV with the Downloader app.
             Works without a PC for Sony BRAVIA, Android TV / Google TV and Roku. Built from ${{ github.sha }}.
             This APK is built only by GitHub Actions from the commit above and carries a signed build attestation (see the repository's Attestations tab).

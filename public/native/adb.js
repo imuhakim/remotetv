@@ -136,7 +136,7 @@
     route(p) {
       const s = this.streams.get(p.arg1);
       if (!s) { if (p.cmd === CMD.WRTE) this.write(CMD.CLSE, p.arg1, p.arg0); return; }
-      if (p.cmd === CMD.OKAY) { s.remote = p.arg0; }
+      if (p.cmd === CMD.OKAY) { s.remote = p.arg0; const f = s.onOkay; s.onOkay = null; f?.(); }
       else if (p.cmd === CMD.WRTE) { s.chunks.push(p.data); s.size += p.data.length; this.write(CMD.OKAY, s.local, p.arg0); }
       else if (p.cmd === CMD.CLSE) {
         this.streams.delete(s.local);
@@ -146,13 +146,32 @@
     }
 
     /** Runs a service ("exec:cmd" / "shell:cmd") and returns all its output bytes. */
-    run(service, { timeoutMs = 20000 } = {}) {
-      if (this.closed) return Promise.reject(new Error('ADB is not connected'));
+    run(service, opts) { return this.open(service, opts).result; }
+
+    /** Runs a service that reads stdin (e.g. "exec:cmd package install -S n"): writes data, returns the output. */
+    async push(service, data, { timeoutMs = 180000 } = {}) {
+      const st = this.open(service, { timeoutMs });
+      const waitOkay = () => new Promise((res) => { st.stream.onOkay = res; });
+      const opened = waitOkay();
+      const alive = () => this.streams.has(st.stream.local); // the TV may close early (e.g. install failure)
+      await Promise.race([opened, st.result]); // stream opened (or failed)
+      for (let off = 0; off < data.length && alive(); off += this.maxData) {
+        const chunk = data.subarray(off, Math.min(data.length, off + this.maxData));
+        const acked = waitOkay();
+        await this.write(CMD.WRTE, st.stream.local, st.stream.remote, chunk);
+        await Promise.race([acked, st.result]); // flow control: one packet in flight
+      }
+      return st.result;
+    }
+
+    open(service, { timeoutMs = 20000 } = {}) {
+      if (this.closed) return { result: Promise.reject(new Error('ADB is not connected')), stream: {} };
       const local = this.nextLocal++;
-      return new Promise((resolve, reject) => {
+      let stream;
+      const result = new Promise((resolve, reject) => {
         const timer = setTimeout(() => { this.streams.delete(local); reject(new Error('The TV took too long to answer')); }, timeoutMs);
-        const s = {
-          local, remote: 0, chunks: [], size: 0,
+        const s = stream = {
+          local, remote: 0, chunks: [], size: 0, onOkay: null,
           done: (err) => {
             clearTimeout(timer);
             if (err) return reject(err);
@@ -165,6 +184,7 @@
         this.streams.set(local, s);
         this.write(CMD.OPEN, local, 0, enc.encode(`${service}\0`)).catch((e) => { this.streams.delete(local); clearTimeout(timer); reject(e); });
       });
+      return { result, stream };
     }
 
     async sh(cmd, opts) { return dec.decode(await this.run(`exec:${cmd}`, opts)).replace(/\r/g, ''); }
@@ -181,6 +201,7 @@
   };
   const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
   const PKG = /^[\w.]+$/;
+  const HELPER_PKG = 'io.github.imuhakim.remotetv.tv';
 
   const features = {
     async screenshot(adb) {
@@ -229,6 +250,19 @@
         tempC: t ? (t > 1000 ? t / 1000 : t) : null,
         topApp: get(/ ([\w.]+)\/[\w.$]+/),
       };
+    },
+    // Installs the RemoteTV TV Helper, allows it to draw over other apps and starts it.
+    async installHelper(adb, apk) {
+      let out = dec.decode(await adb.push(`exec:cmd package install -r -S ${apk.length}`, apk)).trim();
+      if (!/Success/.test(out)) out = dec.decode(await adb.push(`exec:pm install -r -S ${apk.length}`, apk)).trim();
+      if (!/Success/.test(out)) throw new Error(`The TV refused the install: ${out.slice(0, 160) || 'no answer'}`);
+      await adb.sh(`appops set ${HELPER_PKG} SYSTEM_ALERT_WINDOW allow`);
+      const started = await adb.sh(`am start-foreground-service -n ${HELPER_PKG}/.HelperService 2>&1 || am startservice -n ${HELPER_PKG}/.HelperService 2>&1`);
+      return { installed: true, started: !/Error|not found/i.test(started) };
+    },
+    async helperState(adb) {
+      const out = await adb.sh(`pm list packages ${HELPER_PKG}; appops get ${HELPER_PKG} SYSTEM_ALERT_WINDOW 2>/dev/null`);
+      return { installed: out.includes(`package:${HELPER_PKG}`), overlay: /allow/i.test(out) };
     },
     // Sleep timer that runs on the TV itself (the phone can be switched off).
     async sleepTimer(adb, minutes) {

@@ -90,6 +90,8 @@ function fakeAndroidTv() {
   return tv;
 }
 
+const FAKE_APK = crypto.randomBytes(40000);
+
 // ------------------------------------------------ app runtime in a sandbox
 function mockPlugin() {
   const listeners = {};
@@ -120,6 +122,7 @@ function mockPlugin() {
     }),
     tlsWrite: async ({ id, data }) => { conns.get(id).write(Buffer.from(data, 'base64')); },
     tlsClose: async ({ id }) => { conns.get(id)?.destroy(); },
+    readAsset: async ({ path: p }) => { if (p !== 'tvhelper.apk') throw new Error('missing'); return { data: FAKE_APK.toString('base64') }; },
     ssdpSearch: async () => ({ responses: [] }),
     mdnsDiscover: async () => ({ services: [] }),
     keepAwake: async () => {},
@@ -137,7 +140,7 @@ function loadApp(plugin) {
     setInterval, clearInterval, console, Uint8Array, TextEncoder, TextDecoder, Date,
     localStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) },
   });
-  for (const f of ['native/drivers.js', 'native/adb.js', 'native/backend.js']) vm.runInContext(fs.readFileSync(path.join(root, 'public', f), 'utf8'), ctx, { filename: f });
+  for (const f of ['native/drivers.js', 'native/adb.js', 'native/helper.js', 'native/backend.js']) vm.runInContext(fs.readFileSync(path.join(root, 'public', f), 'utf8'), ctx, { filename: f });
   return window.NativeBackend;
 }
 
@@ -169,7 +172,9 @@ test('APK backend pairs with and controls an Android TV (Remote v2)', async (t) 
   await until(() => events.find((e) => e.type === 'pairing'));
   assert.ok(tv.code, 'TV generated a code');
 
-  await assert.rejects(be.request('POST', `/devices/${dev.id}/pair`, { code: '000000' }), /Wrong code|6 characters/);
+  // Same nonce, flipped check byte: always rejected (a fixed wrong code passes the check byte 1 in 256 times).
+  const wrong = ((parseInt(tv.code.slice(0, 2), 16) ^ 0xff).toString(16).padStart(2, '0') + tv.code.slice(2)).toUpperCase();
+  await assert.rejects(be.request('POST', `/devices/${dev.id}/pair`, { code: wrong }), /Wrong code|6 characters/);
   await be.request('POST', `/devices/${dev.id}/pair`, { code: tv.code });
   await until(() => events.find((e) => e.type === 'paired'));
   await until(() => tv.configured); // remote session configured (async on the TV side)
@@ -269,7 +274,8 @@ test('APK infra-red mode sends Sony SIRC patterns through the phone IR emitter',
 // ------------------------------------------------------------ fake ADB TV
 function fakeAdbTv() {
   const CMD = { CNXN: 0x4e584e43, AUTH: 0x48545541, OPEN: 0x4e45504f, OKAY: 0x59414b4f, CLSE: 0x45534c43, WRTE: 0x45545257 };
-  const tv = { allowed: [], prompts: 0, commands: [] };
+  const tv = { allowed: [], prompts: 0, commands: [], installed: null };
+  const uploads = new Map(); // local id -> { need, got: [] }
   // Android RSAPublicKey struct -> Node public key (also checks n0inv and e).
   const parseKey = (b64) => {
     const raw = Buffer.from(b64, 'base64');
@@ -311,6 +317,18 @@ function fakeAdbTv() {
         assert.equal(buf.readUInt32LE(16), sum, 'checksum');
         assert.equal(buf.readUInt32LE(20), (cmd ^ 0xffffffff) >>> 0, 'magic');
         buf = buf.subarray(24 + len);
+        if (cmd === CMD.WRTE && uploads.has(a0)) {
+          const u = uploads.get(a0);
+          u.got.push(Buffer.from(data));
+          send(CMD.OKAY, 99, a0);
+          if (Buffer.concat(u.got).length >= u.need) {
+            tv.installed = Buffer.concat(u.got);
+            uploads.delete(a0);
+            send(CMD.WRTE, 99, a0, Buffer.from('Success\n'));
+            send(CMD.CLSE, 99, a0);
+          }
+          continue;
+        }
         if (cmd === CMD.CNXN) authToken();
         else if (cmd === CMD.AUTH && a0 === 2) {
           const ok = tv.allowed.some((k) => {
@@ -328,6 +346,8 @@ function fakeAdbTv() {
           const c = service.replace(/^exec:/, '');
           let out = '';
           if (c === 'screencap -p') { reply(a0, png); continue; }
+          const inst = /^cmd package install -r -S (\d+)$/.exec(c);
+          if (inst) { uploads.set(a0, { need: Number(inst[1]), got: [] }); send(CMD.OKAY, 99, a0); continue; }
           if (c.startsWith('cmd package query-activities')) out = 'packageName=com.google.android.youtube.tv\n  packageName=com.netflix.ninja\n';
           else if (c === 'pm list packages -3') out = 'package:com.netflix.ninja\n';
           else if (c.includes('getprop ro.product.model')) {
@@ -434,4 +454,86 @@ test('APK shop TV: a temporary TV is forgotten after 30 days without use', async
     const left = await be.request('GET', '/devices');
     assert.deepEqual(left.map((d) => d.id), [keep.id]);
   } finally { Date.now = realNow; }
+});
+
+test('APK installs the TV Helper over ADB in many chunks and allows it to draw', async (t) => {
+  const tv = fakeAdbTv();
+  const port = await listen(tv.server);
+  t.after(() => tv.server.close());
+  const be = loadApp(mockPlugin());
+  const dev = await be.request('POST', '/devices', { host: '127.0.0.1', type: 'androidtv' });
+  await be.request('PATCH', `/devices/${dev.id}`, { adbPort: port });
+  await be.request('POST', `/devices/${dev.id}/adb/connect`, {});
+  const r = await be.request('POST', `/devices/${dev.id}/adb/install-helper`, {});
+  assert.equal(r.installed, true);
+  assert.ok(tv.installed && tv.installed.equals(FAKE_APK), 'TV received the exact APK bytes (40 KB in 4 KB packets)');
+  assert.ok(tv.commands.includes('exec:appops set io.github.imuhakim.remotetv.tv SYSTEM_ALERT_WINDOW allow'));
+  assert.ok(tv.commands.some((c) => c.includes('am start-foreground-service -n io.github.imuhakim.remotetv.tv/.HelperService')));
+  await be.request('DELETE', `/devices/${dev.id}`);
+});
+
+// ------------------------------------------------------- fake TV Helper
+function fakeHelper() {
+  const h = { code: null, tokens: new Set(), ops: [], overlay: true };
+  h.server = require('net').createServer((sock) => {
+    let buf = '';
+    let authed = false;
+    const reply = (o) => sock.write(JSON.stringify(o) + '\n');
+    sock.on('data', (d) => {
+      buf += d.toString('utf8');
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const m = JSON.parse(buf.slice(0, i));
+        buf = buf.slice(i + 1);
+        if (m.t === 'hello') {
+          authed = h.tokens.has(m.token);
+          if (!authed) h.code = String(crypto.randomInt(1e6)).padStart(6, '0');
+          reply({ rid: m.rid, ok: true, paired: authed, overlay: h.overlay, w: 1920, h: 1080 });
+        } else if (m.t === 'pair') {
+          if (m.code === h.code) { const tok = crypto.randomBytes(16).toString('hex'); h.tokens.add(tok); authed = true; reply({ rid: m.rid, ok: true, token: tok }); }
+          else reply({ rid: m.rid, ok: false, error: 'Wrong code' });
+        } else if (authed) h.ops.push(m);
+      }
+    });
+  });
+  return h;
+}
+
+test('APK Draw on TV: pairs with the TV Helper once, then streams strokes', async (t) => {
+  const helper = fakeHelper();
+  const port = await listen(helper.server);
+  t.after(() => helper.server.close());
+  const be = loadApp(mockPlugin());
+  assert.equal((await be.request('GET', '/info')).draw, true);
+  const dev = await be.request('POST', '/devices', { host: '127.0.0.1', type: 'androidtv' });
+  await be.request('PATCH', `/devices/${dev.id}`, { helperPort: port });
+
+  const c1 = await be.request('POST', `/devices/${dev.id}/draw/connect`, {});
+  assert.deepEqual(c1, { paired: false, w: 1920, h: 1080 });
+  assert.ok(helper.code, 'TV shows a code');
+  await assert.rejects(be.request('POST', `/devices/${dev.id}/draw/send`, { ops: [{ t: 'clear' }] }), /Pair/);
+  await assert.rejects(be.request('POST', `/devices/${dev.id}/draw/pair`, { code: '000000' === helper.code ? '111111' : '000000' }), /Wrong code/);
+  await be.request('POST', `/devices/${dev.id}/draw/pair`, { code: `${helper.code.slice(0, 3)} ${helper.code.slice(3)}` });
+  assert.equal((await be.request('GET', '/devices'))[0].helperPaired, true);
+  assert.equal((await be.request('GET', '/devices'))[0].helperToken, undefined, 'token is not exposed to the UI');
+
+  await be.request('POST', `/devices/${dev.id}/draw/send`, { ops: [
+    { t: 'begin', id: 1, c: '#ff3b30', w: 0.006, x: 0.1, y: 0.2 }, { t: 'move', id: 1, p: [0.2, 0.3, 0.3, 0.4] }, { t: 'end', id: 1 },
+    { t: 'msg', text: 'Hello', secs: 5 }, { t: 'reboot' },
+  ] });
+  await until(() => helper.ops.length === 4);
+  assert.deepEqual(helper.ops.map((o) => o.t), ['begin', 'move', 'end', 'msg'], 'unknown ops are dropped');
+
+  // Next time: no code needed.
+  helper.code = null;
+  const c2 = await be.request('POST', `/devices/${dev.id}/draw/connect`, {});
+  assert.equal(c2.paired, true);
+  assert.equal(helper.code, null);
+
+  // Helper not allowed to draw over apps -> clear message.
+  helper.overlay = false;
+  await assert.rejects(be.request('POST', `/devices/${dev.id}/draw/connect`, {}), /not allowed to draw over other apps/);
+  helper.server.close();
+  await assert.rejects(be.request('POST', `/devices/${dev.id}/draw/connect`, {}), /not running on this TV/);
+  await be.request('DELETE', `/devices/${dev.id}`);
 });
