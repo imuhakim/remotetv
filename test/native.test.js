@@ -134,7 +134,7 @@ function loadApp(plugin) {
   };
   const ctx = vm.createContext({
     window, fetch, crypto: globalThis.crypto, btoa, atob, URL, URLSearchParams, AbortController, setTimeout, clearTimeout,
-    setInterval, clearInterval, console, Uint8Array, TextEncoder, TextDecoder,
+    setInterval, clearInterval, console, Uint8Array, TextEncoder, TextDecoder, Date,
     localStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) },
   });
   for (const f of ['native/drivers.js', 'native/adb.js', 'native/backend.js']) vm.runInContext(fs.readFileSync(path.join(root, 'public', f), 'utf8'), ctx, { filename: f });
@@ -238,7 +238,7 @@ test('APK infra-red mode sends Sony SIRC patterns through the phone IR emitter',
   const be = loadApp(plugin);
   assert.equal((await be.request('GET', '/info')).hasIr, true);
   const dev = await be.request('POST', '/devices', { type: 'sony_ir' });
-  assert.equal(dev.host, 'infra-red');
+  assert.equal(dev.host, 'infra-red-sony');
   assert.equal((await be.request('POST', `/devices/${dev.id}/connect`, {})).status, 'connected');
 
   // Decode marks after the 2.4 ms header back into bits (LSB first).
@@ -382,4 +382,50 @@ test('APK ADB mode: authorises once, then screenshots, taps, apps and TV info', 
   await be.request('POST', `/devices/${dev.id}/adb/connect`, {});
   assert.equal(tv.prompts, 1);
   await be.request('DELETE', `/devices/${dev.id}`);
+});
+
+test('APK universal IR: Samsung32 and LG NEC patterns decode to the right codes', async () => {
+  const sent = [];
+  const be = loadApp({ ...mockPlugin(), irInfo: async () => ({ hasIr: true }), irTransmit: async (o) => { sent.push(o); } });
+  // 32-bit decoder: header, then 560 us marks with 1690 (1) / 560 (0) spaces, LSB first.
+  const decode32 = (p) => {
+    const bytes = [];
+    for (let b = 0; b < 4; b++) {
+      let v = 0;
+      for (let i = 0; i < 8; i++) v |= (p[2 + (b * 8 + i) * 2 + 1] === 1690 ? 1 : 0) << i;
+      bytes.push(v);
+    }
+    return { header: [p[0], p[1]], bytes, len: p.length };
+  };
+  const sam = await be.request('POST', '/devices', { type: 'ir', brand: 'samsung' });
+  const lg = await be.request('POST', '/devices', { type: 'ir', brand: 'lg' });
+  assert.equal(sam.name, 'Samsung TV (infra-red)');
+  assert.equal(lg.name, 'LG TV (infra-red)');
+  await be.request('POST', `/devices/${sam.id}/connect`, {});
+  await be.request('POST', `/devices/${lg.id}/connect`, {});
+  await be.request('POST', `/devices/${sam.id}/key`, { key: 'power' });
+  await be.request('POST', `/devices/${sam.id}/key`, { key: 'vol_up' });
+  await be.request('POST', `/devices/${lg.id}/key`, { key: 'power' });
+  await be.request('POST', `/devices/${lg.id}/key`, { key: '5' });
+  assert.deepEqual(decode32(sent[0].pattern), { header: [4500, 4500], bytes: [0x07, 0x07, 0x02, 0xfd], len: 67 });
+  assert.deepEqual(decode32(sent[1].pattern).bytes, [0x07, 0x07, 0x07, 0xf8]);
+  assert.deepEqual(decode32(sent[2].pattern), { header: [9000, 4500], bytes: [0x04, 0xfb, 0x08, 0xf7], len: 67 });
+  assert.deepEqual(decode32(sent[3].pattern).bytes, [0x04, 0xfb, 0x15, 0xea]);
+  assert.deepEqual(sent.map((s) => s.frequency), [38000, 38000, 38000, 38000]);
+  await assert.rejects(be.request('POST', `/devices/${lg.id}/key`, { key: 'search' }), /not available over infra-red for LG/);
+});
+
+test('APK shop TV: a temporary TV is forgotten after 12 hours', async () => {
+  const be = loadApp(mockPlugin());
+  const keep = await be.request('POST', '/devices', { host: '10.0.0.2', type: 'roku', name: 'Home' });
+  const shop = await be.request('POST', '/devices', { host: '10.0.0.9', type: 'roku', name: 'Kedai', temp: true });
+  assert.equal(shop.temp, true);
+  assert.ok(shop.expiresAt > Date.now() + 11.9 * 3600e3);
+  assert.equal((await be.request('GET', '/devices')).length, 2);
+  const realNow = Date.now;
+  Date.now = () => realNow() + 12.1 * 3600e3;
+  try {
+    const left = await be.request('GET', '/devices');
+    assert.deepEqual(left.map((d) => d.id), [keep.id]);
+  } finally { Date.now = realNow; }
 });

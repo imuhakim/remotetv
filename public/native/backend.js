@@ -12,6 +12,16 @@
   let data = { devices: [], lastDeviceId: null };
   try { data = { ...data, ...JSON.parse(localStorage.getItem(KEY)) }; } catch { /* first run */ }
   const save = () => localStorage.setItem(KEY, JSON.stringify(data));
+  const TEMP_MS = 12 * 3600 * 1000;
+  function purgeExpired() {
+    const now = Date.now();
+    const gone = data.devices.filter((d) => d.expiresAt && d.expiresAt < now);
+    if (!gone.length) return;
+    for (const d of gone) { sessions.get(d.id)?.driver.close(); sessions.delete(d.id); adbs?.get(d.id)?.close(); adbs?.delete(d.id); }
+    data.devices = data.devices.filter((d) => !gone.includes(d));
+    if (gone.some((d) => d.id === data.lastDeviceId)) data.lastDeviceId = null;
+    save();
+  }
   const getDev = (id) => data.devices.find((d) => d.id === id);
   const publicView = (d) => ({ ...d, psk: d.psk ? '••••' : undefined });
 
@@ -140,17 +150,23 @@
       return { keys: KEYS, hub: 'This phone (no hub needed)', native: true, adb: !!window.NativeAdb, hasIr: !!ir.hasIr, lastDeviceId: data.lastDeviceId };
     }],
     ['GET', /^\/discover$/, (b, m, q) => discover(Number(q.get('timeout')) || 3500)],
-    ['GET', /^\/devices$/, () => data.devices.map((d) => ({ ...publicView(d), status: sessions.get(d.id)?.status || 'idle', state: sessions.get(d.id)?.state || {} }))],
+    ['GET', /^\/devices$/, () => (purgeExpired(), data.devices).map((d) => ({ ...publicView(d), status: sessions.get(d.id)?.status || 'idle', state: sessions.get(d.id)?.state || {} }))],
     ['POST', /^\/devices$/, (b) => {
-      if (b?.type === 'sony_ir') b = { name: 'Sony TV (infra-red)', ...b, host: 'infra-red' };
+      if (b?.type === 'sony_ir') b = { ...b, type: 'ir', brand: 'sony' };
+      if (b?.type === 'ir') {
+        const brand = (window.NativeTv.ir.BRANDS.includes(b.brand) ? b.brand : 'sony');
+        const label = brand === 'lg' ? 'LG' : brand[0].toUpperCase() + brand.slice(1);
+        b = { name: `${label} TV (infra-red)`, ...b, brand, host: `infra-red-${brand}` };
+      }
       if (!b?.host || !b.type) throw err(400, 'host and type are required');
       if (!drivers[b.type]) throw err(400, `${b.type} TVs need the PC hub version for now`);
-      const fields = ['host', 'type', 'name', 'psk', 'mac', 'dlna', 'dialUrl', 'port'];
+      const fields = ['host', 'type', 'name', 'psk', 'mac', 'dlna', 'dialUrl', 'port', 'brand'];
       const clean = Object.fromEntries(fields.filter((f) => b[f] !== undefined && b[f] !== null).map((f) => [f, b[f]]));
       let d = data.devices.find((x) => x.host === b.host && x.type === b.type);
       if (d) Object.assign(d, clean);
       else { d = { id: Math.random().toString(36).slice(2, 10), addedAt: Date.now(), ...clean }; data.devices.push(d); }
       d.name = d.name || `${d.type} ${d.host}`;
+      if (b.temp) { d.temp = true; d.expiresAt = Date.now() + TEMP_MS; } else if (b.temp === false) { delete d.temp; delete d.expiresAt; }
       save();
       return publicView(d);
     }],

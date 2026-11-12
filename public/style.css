@@ -234,3 +234,6 @@ body.simple .rlabel b { font-size: 26px; }
 .screen-btns .btn { flex: 1; }
 .meter { height: 10px; border-radius: 999px; background: var(--panel-2); overflow: hidden; margin: 10px 0 6px; }
 .meter div { height: 100%; background: linear-gradient(90deg, var(--ok), var(--warn)); }
+
+/* ---------- shop TV switch */
+.shop-switch { margin-bottom: 4px; padding: 12px 14px; }

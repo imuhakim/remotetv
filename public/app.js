@@ -109,19 +109,26 @@ async function selectDevice(d) {
   }
 }
 
+const tempLeft = (d) => (d.expiresAt ? `shop TV · forgets in ${Math.max(1, Math.round((d.expiresAt - Date.now()) / 3600000))} h` : '');
+const hostLabel = (d) => (/^infra-red/.test(d.host || '') ? 'infra-red' : d.host);
+let tempAdd = false; // "shop TV" switch in the TV sheet
+
 function deviceSheet() {
   const items = state.devices.map((d) => `
     <button class="item" data-pick="${d.id}" style="width:100%;text-align:left">
-      <div><b>${esc(d.name)}<span class="tag">${esc(d.type)}</span></b><small>${esc(d.host)} · ${esc(d.status)}</small></div>
+      <div><b>${esc(d.name)}<span class="tag">${esc(d.temp ? 'shop' : d.type)}</span></b><small>${esc(hostLabel(d))} · ${esc(d.status)}${d.temp ? ` · ${esc(tempLeft(d))}` : ''}</small></div>
       <span class="dot ${d.status === 'connected' ? 'on' : ''}"></span>
     </button>`).join('');
   openSheet(`<h2>Your TVs</h2>
     <div class="card list">${items || '<div class="item"><small>No TV saved yet. Scan your Wi-Fi network.</small></div>'}</div>
+    <label class="item card shop-switch"><div><b>Shop / someone else's TV</b><small>Added for now only — forgotten after 12 hours</small></div><input type="checkbox" class="switch" id="sTemp" ${tempAdd ? 'checked' : ''}></label>
     <div class="row gap"><button class="btn" id="sScan">Scan network</button><button class="btn ghost" id="sManual">Add by IP</button></div>
-    ${state.info?.hasIr ? `<div class="row gap" style="margin-top:8px"><button class="btn ghost" id="sIr">Sony TV · infra-red (no Wi-Fi)</button></div>
-    <p class="sub" style="margin-top:6px">Infra-red works like the original remote: point the top of the phone at the TV. Buttons only — no volume level, apps list or keyboard.</p>` : ''}
+    ${state.info?.hasIr ? `<h3>Infra-red (no Wi-Fi needed)</h3>
+    <p class="sub">Point the top of the phone at the TV. Best for a shop TV: no Wi-Fi password or pairing. Buttons only.</p>
+    <div class="choices">${['sony', 'samsung', 'lg'].map((b) => `<button class="btn ghost" data-ir="${b}">${b === 'lg' ? 'LG' : b[0].toUpperCase() + b.slice(1)}</button>`).join('')}</div>` : ''}
     <div id="scanOut"></div>`, (el) => {
-    if ($('#sIr', el)) $('#sIr', el).onclick = () => addDevice({ type: 'sony_ir', name: 'Sony TV (infra-red)' });
+    $('#sTemp', el).onchange = (e) => { tempAdd = e.target.checked; };
+    $$('[data-ir]', el).forEach((b) => b.onclick = () => addDevice({ type: 'ir', brand: b.dataset.ir }));
     $$('[data-pick]', el).forEach((b) => b.onclick = () => { closeSheet(); selectDevice(state.devices.find((d) => d.id === b.dataset.pick)); });
     $('#sScan', el).onclick = () => scan($('#scanOut', el));
     $('#sManual', el).onclick = manualAdd;
@@ -145,7 +152,7 @@ async function scan(out) {
 }
 
 async function addDevice(f) {
-  const body = { host: f.host, type: f.type, name: f.name || f.modelName || f.host, dlna: f.dlna, dialUrl: f.dialUrl, port: f.port };
+  const body = { host: f.host, type: f.type, brand: f.brand, name: f.name || f.modelName || f.host, dlna: f.dlna, dialUrl: f.dialUrl, port: f.port, temp: tempAdd };
   if (f.type === 'sony') {
     const psk = prompt('Sony Pre-Shared Key\n(TV: Settings › Network › Home network › IP control › Pre-Shared Key)', '0000');
     if (psk === null) return;
@@ -715,7 +722,7 @@ function airMouseSheet() {
 // ------------------------------------------------------------ ADB (advanced)
 // Optional mode for Android TVs: the phone talks to the TV's debugging port
 // (5555) to see the screen, tap on it, manage apps and read TV health.
-const adbOk = () => !!(state.info?.adb && dev() && dev().host && dev().type !== 'sony_ir');
+const adbOk = () => !!(state.info?.adb && dev() && dev().host && !['sony_ir', 'ir'].includes(dev().type));
 let adbView = null; // live screen loop state
 
 function adbSetupSheet(then) {
@@ -908,7 +915,7 @@ $('#btnMore').onclick = moreSheet;
 function renderDeviceList() {
   const el = $('#deviceList');
   el.innerHTML = state.devices.map((d) => `
-    <div class="item"><div><b>${esc(d.name)}<span class="tag">${esc(d.type)}</span></b><small>${esc(d.host)}${d.mac ? ` · ${esc(d.mac)}` : ''}${d.dlna ? ' · cast ready' : ''}</small></div>
+    <div class="item"><div><b>${esc(d.name)}<span class="tag">${esc(d.temp ? 'shop' : d.type)}</span></b><small>${esc(hostLabel(d))}${d.mac ? ` · ${esc(d.mac)}` : ''}${d.dlna ? ' · cast ready' : ''}${d.temp ? ` · ${esc(tempLeft(d))}` : ''}</small></div>
       <div class="dev-actions">
         <button class="btn small ghost" data-edit="${d.id}">Edit</button>
         <button class="btn small danger" data-del="${d.id}">Forget</button>

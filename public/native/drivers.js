@@ -477,8 +477,40 @@
   }
   const SONY_IR = { ...SONY_FALLBACK, power: c1(0x15), power_on: c1(0x2e) }; // 0x15 = power toggle
 
-  class SonyIr {
-    constructor(device) { this.device = device; }
+  // NEC (LG and many others) and Samsung32: 38 kHz, 32 bits LSB first,
+  // 560 us marks, "1" = 1690 us space, "0" = 560 us space, then a stop mark.
+  function pulse32(header, bytes) {
+    const out = [...header];
+    for (const byte of bytes) for (let i = 0; i < 8; i++) out.push(560, (byte >> i) & 1 ? 1690 : 560);
+    out.push(560);
+    return out;
+  }
+  const necPattern = (addr, cmd) => pulse32([9000, 4500], [addr, ~addr & 0xff, cmd, ~cmd & 0xff]);
+  const samsungPattern = (addr, cmd) => pulse32([4500, 4500], [addr, addr, cmd, ~cmd & 0xff]);
+  const digits = (codes) => Object.fromEntries(codes.map((c, i) => [String(i), c]));
+
+  // Widely published TV codes. Samsung: Samsung32 address 0x07. LG: NEC address 0x04.
+  const SAMSUNG_IR = {
+    power: 0x02, power_off: 0x98, input: 0x01, vol_up: 0x07, vol_down: 0x0b, mute: 0x0f, ch_up: 0x12, ch_down: 0x10,
+    menu: 0x1a, settings: 0x1a, up: 0x60, down: 0x61, left: 0x65, right: 0x62, ok: 0x68, back: 0x58, home: 0x79, info: 0x1f,
+    guide: 0x4f, play: 0x47, pause: 0x4a, stop: 0x46, rewind: 0x45, forward: 0x48, red: 0x6c, green: 0x14, yellow: 0x15, blue: 0x16,
+    ...digits([0x11, 0x04, 0x05, 0x06, 0x08, 0x09, 0x0a, 0x0c, 0x0d, 0x0e]),
+  };
+  const LG_IR = {
+    power: 0x08, power_on: 0xc4, power_off: 0xc5, input: 0x0b, vol_up: 0x02, vol_down: 0x03, mute: 0x09, ch_up: 0x00, ch_down: 0x01,
+    menu: 0x43, settings: 0x43, up: 0x40, down: 0x41, left: 0x07, right: 0x06, ok: 0x44, back: 0x28, home: 0x7c, info: 0xaa,
+    guide: 0xa9, play: 0xb0, pause: 0xba, stop: 0xb1, rewind: 0x8f, forward: 0x8e, red: 0x72, green: 0x71, yellow: 0x63, blue: 0x61,
+    ...digits([0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19]),
+  };
+  const IR_BRANDS = {
+    sony: { label: 'Sony', freq: 40000, pattern: (k) => SONY_IR[k] && sircPattern(irccToSirc(SONY_IR[k]).bits) },
+    samsung: { label: 'Samsung', freq: 38000, pattern: (k) => SAMSUNG_IR[k] !== undefined && samsungPattern(0x07, SAMSUNG_IR[k]) },
+    lg: { label: 'LG', freq: 38000, pattern: (k) => LG_IR[k] !== undefined && necPattern(0x04, LG_IR[k]) },
+  };
+
+  // Infra-red TV: device.brand picks the code set ("sony_ir" devices are Sony).
+  class IrTv {
+    constructor(device) { this.device = device; this.brand = IR_BRANDS[device.brand || 'sony'] || IR_BRANDS.sony; }
     async connect() {
       const r = await RemoteTv.irInfo().catch(() => ({ hasIr: false }));
       if (!r.hasIr) throw new Error('This phone has no infra-red emitter. Use Wi-Fi mode (Android TV or Sony BRAVIA) instead.');
@@ -486,14 +518,15 @@
     }
     async sendKey(key) {
       if (key === 'play_pause') { key = this.paused ? 'play' : 'pause'; this.paused = !this.paused; }
-      const code = SONY_IR[key];
-      if (!code) throw new Error(`Key "${key}" is not available over infra-red`);
-      await RemoteTv.irTransmit({ frequency: 40000, pattern: sircPattern(irccToSirc(code).bits) });
+      const pattern = this.brand.pattern(key);
+      if (!pattern) throw new Error(`Key "${key}" is not available over infra-red for ${this.brand.label}`);
+      await RemoteTv.irTransmit({ frequency: this.brand.freq, pattern });
     }
     async launchApp() { throw new Error('Opening apps needs Wi-Fi mode. Over infra-red use Home and the arrows.'); }
     close() {}
   }
 
-  window.NativeTv = { RemoteTv, req, xmlTag, drivers: { sony: Sony, roku: Roku, androidtv: AndroidTv, sony_ir: SonyIr }, cast, ir: { irccToSirc, sircPattern, SONY_IR },
+  window.NativeTv = { RemoteTv, req, xmlTag, drivers: { sony: Sony, roku: Roku, androidtv: AndroidTv, sony_ir: IrTv, ir: IrTv }, cast,
+    ir: { irccToSirc, sircPattern, necPattern, samsungPattern, SONY_IR, SAMSUNG_IR, LG_IR, BRANDS: Object.keys(IR_BRANDS) },
     net: { listenSockets, sockets, u8ToB64, b64ToU8, clientIdentity } };
 })();
