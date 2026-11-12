@@ -149,7 +149,7 @@ public class OverlayView extends View {
         int textW = (int) (w * 0.6f);
         StaticLayout body = new StaticLayout(cardText, cardPaint, textW, Layout.Alignment.ALIGN_CENTER, 1f, 0f, false);
         float titleH = cardTitle != null ? cardTitlePaint.getTextSize() * 1.6f : 0;
-        float boxW = textW + pad * 2, boxH = body.sh + titleH + pad * 2;
+        float boxW = textW + pad * 2, boxH = body.getHeight() + titleH + pad * 2;
         float left = (w - boxW) / 2f, top = h * 0.72f - boxH / 2f;
         c.drawRoundRect(new RectF(left, top, left + boxW, top + boxH), pad, pad, cardBg);
         if (cardTitle != null) {
