@@ -124,15 +124,43 @@ function deviceSheet() {
     <label class="item card shop-switch"><div><b>Shop / someone else's TV</b><small>Forgotten automatically after 1 month without use</small></div><input type="checkbox" class="switch" id="sTemp" ${tempAdd ? 'checked' : ''}></label>
     <div class="row gap"><button class="btn" id="sScan">Scan network</button><button class="btn ghost" id="sManual">Add by IP</button></div>
     ${state.info?.hasIr ? `<h3>Infra-red (no Wi-Fi needed)</h3>
-    <p class="sub">Point the top of the phone at the TV. Best for a shop TV: no Wi-Fi password or pairing. Buttons only.</p>
-    <div class="choices">${['sony', 'samsung', 'lg'].map((b) => `<button class="btn ghost" data-ir="${b}">${b === 'lg' ? 'LG' : b[0].toUpperCase() + b.slice(1)}</button>`).join('')}</div>` : ''}
+    <p class="sub">Point the top of the phone at the TV. Best for a shop or clinic TV: no Wi-Fi or pairing. Pick the brand written on the TV.</p>
+    <div class="choices">${(state.irBrands || []).map((b) => `<button class="btn ghost" data-ir="${esc(b.id)}">${esc(b.label)}</button>`).join('')}</div>
+    <div class="row gap"><button class="btn" id="sFind">Not sure? Find my TV</button></div>` : ''}
     <div id="scanOut"></div>`, (el) => {
     $('#sTemp', el).onchange = (e) => { tempAdd = e.target.checked; };
     $$('[data-ir]', el).forEach((b) => b.onclick = () => addDevice({ type: 'ir', brand: b.dataset.ir }));
+    if ($('#sFind', el)) $('#sFind', el).onclick = () => findMyTv(0);
     $$('[data-pick]', el).forEach((b) => b.onclick = () => { closeSheet(); selectDevice(state.devices.find((d) => d.id === b.dataset.pick)); });
     $('#sScan', el).onclick = () => scan($('#scanOut', el));
     $('#sManual', el).onclick = manualAdd;
   });
+}
+
+// "Find my TV": tries each infra-red code set with Volume + until the user sees the TV react.
+async function findMyTv(i) {
+  const brands = state.irBrands || [];
+  if (i >= brands.length) {
+    openSheet(`<h2>Find my TV</h2><p class="sub">None of the ${brands.length} code sets worked. Check that you point the top of the phone at the TV from 1–3 metres, then try again. This TV brand may not be supported yet — tell us the brand on GitHub.</p>
+      <div class="row gap"><button class="btn" id="fAgain">Start again</button></div>`, (el) => { $('#fAgain', el).onclick = () => findMyTv(0); });
+    return;
+  }
+  const b = brands[i];
+  const send = () => api('/ir/test', { body: { brand: b.id, key: 'vol_up' } }).catch((e) => toast(e.message, true));
+  openSheet(`<h2>Find my TV</h2>
+    <p class="sub">Point the phone at the TV. Trying code set <b>${i + 1} of ${brands.length}: ${esc(b.label)}</b> (Volume +).</p>
+    <p style="font-size:18px;margin:14px 0">Did the TV's volume go up?</p>
+    <div class="row gap"><button class="btn" id="fYes">Yes, it worked</button><button class="btn ghost" id="fNo">No, try next</button></div>
+    <div class="row gap"><button class="btn ghost" id="fAgain">Send again</button></div>`, (el) => {
+    $('#fYes', el).onclick = async () => {
+      await api('/ir/test', { body: { brand: b.id, key: 'vol_down' } }).catch(() => {}); // put the volume back
+      addDevice({ type: 'ir', brand: b.id });
+    };
+    $('#fNo', el).onclick = () => findMyTv(i + 1);
+    $('#fAgain', el).onclick = send;
+  });
+  buzz(20);
+  send();
 }
 
 const NATIVE_TYPES = ['sony', 'androidtv', 'roku'];
@@ -1197,7 +1225,7 @@ function loadScript(src) {
 
 (async function boot() {
   if (NATIVE) {
-    for (const src of ['vendor/forge.min.js', 'vendor/protobuf.min.js', 'vendor/protos.js', 'native/drivers.js', 'native/adb.js', 'native/helper.js', 'native/backend.js']) await loadScript(src);
+    for (const src of ['vendor/forge.min.js', 'vendor/protobuf.min.js', 'vendor/protos.js', 'native/ircodes.js', 'native/drivers.js', 'native/adb.js', 'native/helper.js', 'native/backend.js']) await loadScript(src);
     document.body.classList.add('native');
   }
   applySettings();
@@ -1208,6 +1236,7 @@ function loadScript(src) {
   if (!NATIVE && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   try {
     state.info = await api('/info');
+    if (state.info.hasIr) state.irBrands = await api('/ir/brands').catch(() => []);
     $('#hubAddr').textContent = NATIVE ? 'Running on this phone — no PC needed' : `${state.info.hub}  ·  HTTPS :8443 for voice`;
     await loadDevices();
     const last = state.devices.find((d) => d.id === state.info.lastDeviceId) || state.devices[0];

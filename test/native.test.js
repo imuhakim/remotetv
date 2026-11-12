@@ -140,7 +140,7 @@ function loadApp(plugin) {
     setInterval, clearInterval, console, Uint8Array, TextEncoder, TextDecoder, Date,
     localStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) },
   });
-  for (const f of ['native/drivers.js', 'native/adb.js', 'native/helper.js', 'native/backend.js']) vm.runInContext(fs.readFileSync(path.join(root, 'public', f), 'utf8'), ctx, { filename: f });
+  for (const f of ['native/ircodes.js', 'native/drivers.js', 'native/adb.js', 'native/helper.js', 'native/backend.js']) vm.runInContext(fs.readFileSync(path.join(root, 'public', f), 'utf8'), ctx, { filename: f });
   return window.NativeBackend;
 }
 
@@ -537,4 +537,81 @@ test('APK Draw on TV: pairs with the TV Helper once, then streams strokes', asyn
   helper.server.close();
   await assert.rejects(be.request('POST', `/devices/${dev.id}/draw/connect`, {}), /not running on this TV/);
   await be.request('DELETE', `/devices/${dev.id}`);
+});
+
+test('APK infra-red code sets from IRDB: Toshiba, Sharp, Panasonic, Philips RC5, TCL', async () => {
+  const sent = [];
+  const be = loadApp({ ...mockPlugin(), irInfo: async () => ({ hasIr: true }), irTransmit: async (o) => { sent.push(o); } });
+  const brands = await be.request('GET', '/ir/brands');
+  for (const id of ['sony', 'samsung', 'lg', 'toshiba', 'sharp', 'panasonic', 'philips', 'tcl', 'sanyo', 'hitachi']) {
+    assert.ok(brands.some((b) => b.id === id), `${id} listed`);
+  }
+  const key = async (brand, k) => {
+    const d = await be.request('POST', '/devices', { type: 'ir', brand });
+    await be.request('POST', `/devices/${d.id}/connect`, {});
+    await be.request('POST', `/devices/${d.id}/key`, { key: k });
+    return sent[sent.length - 1];
+  };
+  // Pulse-distance decoder: header pair, then (mark, space) per bit; long space = 1.
+  const pd = (p, start, n, threshold) => {
+    const bits = [];
+    for (let i = 0; i < n; i++) bits.push(p[start + i * 2 + 1] > threshold ? 1 : 0);
+    return bits;
+  };
+  const num = (bits, lsbFirst = true) => (lsbFirst ? bits : [...bits].reverse()).reduce((a, b, i) => a | (b << i), 0);
+  const bytes = (bits) => Array.from({ length: bits.length / 8 }, (_, i) => num(bits.slice(i * 8, i * 8 + 8)));
+
+  // Toshiba: NEC, address 0x40, POWER = 18 (0x12)
+  const tosh = await key('toshiba', 'power');
+  assert.equal(tosh.frequency, 38000);
+  assert.deepEqual([tosh.pattern[0], tosh.pattern[1]], [9000, 4500]);
+  assert.deepEqual(bytes(pd(tosh.pattern, 2, 32, 1000)), [0x40, 0xbf, 0x12, 0xed]);
+  assert.deepEqual(bytes(pd((await key('toshiba', 'vol_up')).pattern, 2, 32, 1000)).slice(2), [26, 229]);
+
+  // Sharp: D=1, POWER = 22; two frames: (D, F, ext 1) then (D, ~F, ext 2)
+  const sh = (await key('sharp', 'power')).pattern;
+  const f1 = pd(sh, 0, 15, 1200); // no header: bit i space is at 2i+1
+  assert.equal(num(f1.slice(0, 5)), 1);
+  assert.equal(num(f1.slice(5, 13)), 22);
+  assert.equal(num(f1.slice(13, 15)), 1);
+  const f2 = pd(sh, 32, 15, 1200); // after 15 bits, stop mark and gap
+  assert.equal(num(f2.slice(5, 13)), (~22) & 0xff);
+  assert.equal(num(f2.slice(13, 15)), 2);
+
+  // Panasonic: 0x02 0x20 D=128 S=0 F=61 (D^S^F)
+  const pa = await key('panasonic', 'power');
+  assert.equal(pa.frequency, 37000);
+  assert.deepEqual(bytes(pd(pa.pattern, 2, 48, 864)), [0x02, 0x20, 128, 0, 61, 128 ^ 61]);
+
+  // Philips RC5: Manchester, D=0, POWER = 12, toggle bit flips each press
+  const rc5Bits = (p) => {
+    const levels = [0]; // the invisible first half of the start bit
+    p.forEach((d, i) => { for (let k = 0; k < Math.round(d / 889); k++) levels.push(i % 2 === 0 ? 1 : 0); });
+    while (levels.length < 28) levels.push(0);
+    return Array.from({ length: 14 }, (_, i) => (levels[i * 2] === 0 && levels[i * 2 + 1] === 1 ? 1 : 0));
+  };
+  const ph1 = rc5Bits((await key('philips', 'power')).pattern);
+  assert.equal(ph1[0], 1, 'start bit');
+  assert.equal(ph1[1], 1, 'field bit (command < 64)');
+  assert.equal(num(ph1.slice(3, 8), false), 0, 'device');
+  assert.equal(num(ph1.slice(8, 14), false), 12, 'command');
+  const ph2 = rc5Bits((await key('philips', 'vol_up')).pattern);
+  assert.equal(num(ph2.slice(8, 14), false), 16);
+
+  // TCL: RCA-38, MSB first, D=15 (4 bits) POWER = 42, then ~D ~F
+  const tcl = (await key('tcl', 'power')).pattern;
+  assert.deepEqual([tcl[0], tcl[1]], [3680, 3680]);
+  const tb = pd(tcl, 2, 24, 1400);
+  assert.equal(num(tb.slice(0, 4), false), 15);
+  assert.equal(num(tb.slice(4, 12), false), 42);
+  assert.equal(num(tb.slice(12, 16), false), 0);
+  assert.equal(num(tb.slice(16, 24), false), (~42) & 0xff);
+
+  // Older Toshiba remotes have no arrows: CH/VOL act as cursor keys in menus.
+  assert.deepEqual(bytes(pd((await key('toshiba', 'up')).pattern, 2, 32, 1000))[2], 27);
+  // "Find my TV" sends a test key without saving a TV.
+  const before = sent.length;
+  await be.request('POST', '/ir/test', { brand: 'hitachi', key: 'vol_up' });
+  assert.deepEqual(bytes(pd(sent[before].pattern, 2, 32, 1000)), [80, 175, 18, 237]);
+  for (const s of sent) assert.equal(s.pattern.length % 2, 1, 'every pattern starts and ends with a mark');
 });

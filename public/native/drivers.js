@@ -502,31 +502,105 @@
     guide: 0xa9, play: 0xb0, pause: 0xba, stop: 0xb1, rewind: 0x8f, forward: 0x8e, red: 0x72, green: 0x71, yellow: 0x63, blue: 0x61,
     ...digits([0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19]),
   };
-  const IR_BRANDS = {
-    sony: { label: 'Sony', freq: 40000, pattern: (k) => SONY_IR[k] && sircPattern(irccToSirc(SONY_IR[k]).bits) },
-    samsung: { label: 'Samsung', freq: 38000, pattern: (k) => SAMSUNG_IR[k] !== undefined && samsungPattern(0x07, SAMSUNG_IR[k]) },
-    lg: { label: 'LG', freq: 38000, pattern: (k) => LG_IR[k] !== undefined && necPattern(0x04, LG_IR[k]) },
+  // ---- more protocols, for the IRDB code sets in ircodes.js (IRP notation from irdb/makehex)
+  // Turns signed durations (+mark, -space) into alternating on/off times, merging
+  // neighbours of the same kind, and drops the trailing gap so it ends on a mark.
+  function durations(list) {
+    const out = [];
+    let lastMark = null;
+    for (const v of list) {
+      if (!v) continue;
+      const mark = v > 0;
+      if (out.length && lastMark === mark) out[out.length - 1] += Math.abs(v);
+      else out.push(Math.abs(v));
+      lastMark = mark;
+    }
+    if (out.length % 2 === 0) out.pop();
+    return out.map(Math.round);
+  }
+  const lsb = (v, n) => Array.from({ length: n }, (_, i) => (v >> i) & 1);
+  const msb = (v, n) => Array.from({ length: n }, (_, i) => (v >> (n - 1 - i)) & 1);
+  const pulseBits = (bits, u, zero, one) => bits.flatMap((b) => [u, -(b ? one : zero) * u]);
+  const ENCODERS = {
+    // NEC1 {38.4k,564}<1,-1|1,-3>(16,-8,D:8,S:8,F:8,~F:8,1,-78); S defaults to ~D
+    nec1: (d, s, f) => ({ freq: 38000, pattern: necPatternS(d, s < 0 ? ~d & 0xff : s, f) }),
+    // Sharp {38k,264}<1,-3|1,-7>(D:5,F:8,1:2,1,-165,D:5,~F:8,2:2,1,-165)
+    sharp: (d, s, f) => {
+      const u = 264;
+      const frame = (cmd, ext) => [...pulseBits([...lsb(d, 5), ...lsb(cmd, 8), ...lsb(ext, 2)], u, 3, 7), u, -165 * u];
+      return { freq: 38000, pattern: durations([...frame(f, 1), ...frame(~f & 0xff, 2)]) };
+    },
+    // Panasonic {37k,432}<1,-1|1,-3>(8,-4,2:8,32:8,D:8,S:8,F:8,(D^S^F):8,1,-173)
+    panasonic: (d, s, f) => {
+      const u = 432;
+      const bytes = [0x02, 0x20, d, s, f, (d ^ s ^ f) & 0xff];
+      return { freq: 37000, pattern: durations([8 * u, -4 * u, ...pulseBits(bytes.flatMap((b) => lsb(b, 8)), u, 1, 3), u, -173 * u]) };
+    },
+    // RC5 {36k,msb,889}<1,-1|-1,1>(1,~F:1:6,T:1,D:5,F:6,^114m): Manchester, toggle bit flips per press
+    rc5: (d, s, f, st) => {
+      const u = 889;
+      st.t = st.t ? 0 : 1;
+      const bits = [(~f >> 6) & 1, st.t, ...msb(d, 5), ...msb(f & 0x3f, 6)];
+      return { freq: 36000, pattern: durations([u, ...bits.flatMap((b) => (b ? [-u, u] : [u, -u]))]) };
+    },
+    // RCA-38 {38.7k,460,msb}<1,-2|1,-4>(8,-8,D:4,F:8,~D:4,~F:8,1,-16)
+    rca38: (d, s, f) => {
+      const u = 460;
+      const bits = [...msb(d, 4), ...msb(f, 8), ...msb(~d & 0xf, 4), ...msb(~f & 0xff, 8)];
+      return { freq: 38000, pattern: durations([8 * u, -8 * u, ...pulseBits(bits, u, 2, 4), u, -16 * u]) };
+    },
   };
+  function necPatternS(addr, sub, cmd) { return pulse32([9000, 4500], [addr, sub, cmd, ~cmd & 0xff]); }
+
+  const BUILT_IN = {
+    sony: { label: 'Sony', pattern: (k) => SONY_IR[k] && { freq: 40000, pattern: sircPattern(irccToSirc(SONY_IR[k]).bits) } },
+    samsung: { label: 'Samsung', pattern: (k) => SAMSUNG_IR[k] !== undefined && { freq: 38000, pattern: samsungPattern(0x07, SAMSUNG_IR[k]) } },
+    lg: { label: 'LG', pattern: (k) => LG_IR[k] !== undefined && { freq: 38000, pattern: necPattern(0x04, LG_IR[k]) } },
+  };
+  // Code sets: the three above plus every IRDB set in window.IR_CODES (loaded from ircodes.js).
+  function irBrands() {
+    const all = { ...BUILT_IN };
+    for (const [key, c] of Object.entries(window.IR_CODES || {})) {
+      if (!ENCODERS[c.proto]) continue;
+      all[key] = { label: c.label, pattern: (k, st) => c.keys[k] !== undefined && ENCODERS[c.proto](c.d, c.s, c.keys[k], st) };
+    }
+    return all;
+  }
 
   // Infra-red TV: device.brand picks the code set ("sony_ir" devices are Sony).
   class IrTv {
-    constructor(device) { this.device = device; this.brand = IR_BRANDS[device.brand || 'sony'] || IR_BRANDS.sony; }
+    constructor(device) {
+      const brands = irBrands();
+      this.device = device; this.brand = brands[device.brand || 'sony'] || brands.sony; this.state = {};
+    }
     async connect() {
       const r = await RemoteTv.irInfo().catch(() => ({ hasIr: false }));
       if (!r.hasIr) throw new Error('This phone has no infra-red emitter. Use Wi-Fi mode (Android TV or Sony BRAVIA) instead.');
       return true;
     }
     async sendKey(key) {
-      if (key === 'play_pause') { key = this.paused ? 'play' : 'pause'; this.paused = !this.paused; }
-      const pattern = this.brand.pattern(key);
-      if (!pattern) throw new Error(`Key "${key}" is not available over infra-red for ${this.brand.label}`);
-      await RemoteTv.irTransmit({ frequency: this.brand.freq, pattern });
+      let ir = this.brand.pattern(key, this.state);
+      if (!ir && key === 'play_pause') { ir = this.brand.pattern(this.paused ? 'play' : 'pause', this.state); this.paused = !this.paused; }
+      if (!ir && key === 'home') ir = this.brand.pattern('menu', this.state); // older TVs: Menu is the closest
+      if (!ir) throw new Error(`Key "${key}" is not available over infra-red for ${this.brand.label}`);
+      await RemoteTv.irTransmit({ frequency: ir.freq, pattern: ir.pattern });
     }
     async launchApp() { throw new Error('Opening apps needs Wi-Fi mode. Over infra-red use Home and the arrows.'); }
     close() {}
   }
+  // Sends one key with a code set, without a saved TV ("Find my TV").
+  async function irTest(brand, key) {
+    const b = irBrands()[brand];
+    const ir = b && b.pattern(key, {});
+    if (!ir) throw new Error(`No "${key}" code for ${brand}`);
+    await RemoteTv.irTransmit({ frequency: ir.freq, pattern: ir.pattern });
+  }
 
   window.NativeTv = { RemoteTv, req, xmlTag, drivers: { sony: Sony, roku: Roku, androidtv: AndroidTv, sony_ir: IrTv, ir: IrTv }, cast,
-    ir: { irccToSirc, sircPattern, necPattern, samsungPattern, SONY_IR, SAMSUNG_IR, LG_IR, BRANDS: Object.keys(IR_BRANDS) },
+    ir: {
+      irccToSirc, sircPattern, necPattern, samsungPattern, SONY_IR, SAMSUNG_IR, LG_IR, ENCODERS, irTest,
+      get BRANDS() { return Object.keys(irBrands()); },
+      label: (b) => irBrands()[b]?.label || b,
+    },
     net: { listenSockets, sockets, u8ToB64, b64ToU8, clientIdentity } };
 })();

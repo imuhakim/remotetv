@@ -171,13 +171,15 @@
       const ir = await Promise.resolve().then(() => RemoteTv.irInfo()).catch(() => ({ hasIr: false }));
       return { keys: KEYS, hub: 'This phone (no hub needed)', native: true, adb: !!window.NativeAdb, draw: !!window.NativeHelper, hasIr: !!ir.hasIr, lastDeviceId: data.lastDeviceId };
     }],
+    ['GET', /^\/ir\/brands$/, () => window.NativeTv.ir.BRANDS.map((id) => ({ id, label: window.NativeTv.ir.label(id) }))],
+    ['POST', /^\/ir\/test$/, async (b) => { await window.NativeTv.ir.irTest(String(b.brand), String(b.key || 'vol_up')); }],
     ['GET', /^\/discover$/, (b, m, q) => discover(Number(q.get('timeout')) || 3500)],
     ['GET', /^\/devices$/, () => (purgeExpired(), data.devices).map((d) => ({ ...publicView(d), status: sessions.get(d.id)?.status || 'idle', state: sessions.get(d.id)?.state || {} }))],
     ['POST', /^\/devices$/, (b) => {
       if (b?.type === 'sony_ir') b = { ...b, type: 'ir', brand: 'sony' };
       if (b?.type === 'ir') {
         const brand = (window.NativeTv.ir.BRANDS.includes(b.brand) ? b.brand : 'sony');
-        const label = brand === 'lg' ? 'LG' : brand[0].toUpperCase() + brand.slice(1);
+        const label = window.NativeTv.ir.label(brand);
         b = { name: `${label} TV (infra-red)`, ...b, brand, host: `infra-red-${brand}` };
       }
       if (!b?.host || !b.type) throw err(400, 'host and type are required');
