@@ -12,7 +12,7 @@
   let data = { devices: [], lastDeviceId: null };
   try { data = { ...data, ...JSON.parse(localStorage.getItem(KEY)) }; } catch { /* first run */ }
   const save = () => localStorage.setItem(KEY, JSON.stringify(data));
-  const TEMP_MS = 12 * 3600 * 1000;
+  const TEMP_MS = 30 * 24 * 3600 * 1000; // shop TVs: forgotten after 30 days without use
   function purgeExpired() {
     const now = Date.now();
     const gone = data.devices.filter((d) => d.expiresAt && d.expiresAt < now);
@@ -37,6 +37,7 @@
   };
 
   async function connect(device) {
+    if (device.temp) { device.expiresAt = Date.now() + TEMP_MS; save(); } // every use restarts the 30 days
     sessions.get(device.id)?.driver.close();
     const Driver = drivers[device.type];
     if (!Driver) throw err(400, `${device.type} is only available with the PC hub version`);

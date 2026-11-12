@@ -172,7 +172,7 @@ test('APK backend pairs with and controls an Android TV (Remote v2)', async (t) 
   await assert.rejects(be.request('POST', `/devices/${dev.id}/pair`, { code: '000000' }), /Wrong code|6 characters/);
   await be.request('POST', `/devices/${dev.id}/pair`, { code: tv.code });
   await until(() => events.find((e) => e.type === 'paired'));
-  assert.equal(tv.configured, true, 'remote session configured');
+  await until(() => tv.configured); // remote session configured (async on the TV side)
   await until(() => events.find((e) => e.type === 'state' && e.payload.volume === 24));
   await until(() => tv.pong === 7);
 
@@ -415,16 +415,22 @@ test('APK universal IR: Samsung32 and LG NEC patterns decode to the right codes'
   await assert.rejects(be.request('POST', `/devices/${lg.id}/key`, { key: 'search' }), /not available over infra-red for LG/);
 });
 
-test('APK shop TV: a temporary TV is forgotten after 12 hours', async () => {
+test('APK shop TV: a temporary TV is forgotten after 30 days without use', async () => {
   const be = loadApp(mockPlugin());
   const keep = await be.request('POST', '/devices', { host: '10.0.0.2', type: 'roku', name: 'Home' });
   const shop = await be.request('POST', '/devices', { host: '10.0.0.9', type: 'roku', name: 'Kedai', temp: true });
   assert.equal(shop.temp, true);
-  assert.ok(shop.expiresAt > Date.now() + 11.9 * 3600e3);
+  assert.ok(shop.expiresAt > Date.now() + 29.9 * 86400e3);
   assert.equal((await be.request('GET', '/devices')).length, 2);
   const realNow = Date.now;
-  Date.now = () => realNow() + 12.1 * 3600e3;
   try {
+    // Using it on day 20 restarts the month...
+    Date.now = () => realNow() + 20 * 86400e3;
+    await be.request('POST', `/devices/${shop.id}/connect`, {}).catch(() => {}); // fake Roku is offline; the use still counts
+    Date.now = () => realNow() + 45 * 86400e3;
+    assert.equal((await be.request('GET', '/devices')).length, 2, 'still kept 25 days after last use');
+    // ...and 31 days after the last use it is gone.
+    Date.now = () => realNow() + 51 * 86400e3;
     const left = await be.request('GET', '/devices');
     assert.deepEqual(left.map((d) => d.id), [keep.id]);
   } finally { Date.now = realNow; }

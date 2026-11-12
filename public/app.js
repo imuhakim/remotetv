@@ -109,7 +109,7 @@ async function selectDevice(d) {
   }
 }
 
-const tempLeft = (d) => (d.expiresAt ? `shop TV · forgets in ${Math.max(1, Math.round((d.expiresAt - Date.now()) / 3600000))} h` : '');
+const tempLeft = (d) => (d.expiresAt ? `shop TV · forgotten in ${Math.max(1, Math.ceil((d.expiresAt - Date.now()) / 86400000))} days if unused` : '');
 const hostLabel = (d) => (/^infra-red/.test(d.host || '') ? 'infra-red' : d.host);
 let tempAdd = false; // "shop TV" switch in the TV sheet
 
@@ -121,7 +121,7 @@ function deviceSheet() {
     </button>`).join('');
   openSheet(`<h2>Your TVs</h2>
     <div class="card list">${items || '<div class="item"><small>No TV saved yet. Scan your Wi-Fi network.</small></div>'}</div>
-    <label class="item card shop-switch"><div><b>Shop / someone else's TV</b><small>Added for now only — forgotten after 12 hours</small></div><input type="checkbox" class="switch" id="sTemp" ${tempAdd ? 'checked' : ''}></label>
+    <label class="item card shop-switch"><div><b>Shop / someone else's TV</b><small>Forgotten automatically after 1 month without use</small></div><input type="checkbox" class="switch" id="sTemp" ${tempAdd ? 'checked' : ''}></label>
     <div class="row gap"><button class="btn" id="sScan">Scan network</button><button class="btn ghost" id="sManual">Add by IP</button></div>
     ${state.info?.hasIr ? `<h3>Infra-red (no Wi-Fi needed)</h3>
     <p class="sub">Point the top of the phone at the TV. Best for a shop TV: no Wi-Fi password or pairing. Buttons only.</p>
