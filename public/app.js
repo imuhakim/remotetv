@@ -124,43 +124,66 @@ function deviceSheet() {
     <label class="item card shop-switch"><div><b>Shop / someone else's TV</b><small>Forgotten automatically after 1 month without use</small></div><input type="checkbox" class="switch" id="sTemp" ${tempAdd ? 'checked' : ''}></label>
     <div class="row gap"><button class="btn" id="sScan">Scan network</button><button class="btn ghost" id="sManual">Add by IP</button></div>
     ${state.info?.hasIr ? `<h3>Infra-red (no Wi-Fi needed)</h3>
-    <p class="sub">Point the top of the phone at the TV. Best for a shop or clinic TV: no Wi-Fi or pairing. Pick the brand written on the TV.</p>
-    <div class="choices">${(state.irBrands || []).map((b) => `<button class="btn ghost" data-ir="${esc(b.id)}">${esc(b.label)}</button>`).join('')}</div>
-    <div class="row gap"><button class="btn" id="sFind">Not sure? Find my TV</button></div>` : ''}
+    <p class="sub">Point the top of the phone at the TV. Best for a shop or clinic TV: no Wi-Fi or pairing. ${(state.irBrands || []).length} brands.</p>
+    <div class="row"><input id="sBrand" type="search" placeholder="Type the brand on the TV, e.g. Toshiba" autocomplete="off"></div>
+    <div class="choices" id="sBrands"></div>
+    <div class="row gap"><button class="btn" id="sFind">Don't know the brand? Try all</button></div>` : ''}
     <div id="scanOut"></div>`, (el) => {
     $('#sTemp', el).onchange = (e) => { tempAdd = e.target.checked; };
-    $$('[data-ir]', el).forEach((b) => b.onclick = () => addDevice({ type: 'ir', brand: b.dataset.ir }));
-    if ($('#sFind', el)) $('#sFind', el).onclick = () => findMyTv(0);
+    const box = $('#sBrand', el);
+    if (box) {
+      const show = () => {
+        const q = box.value.trim().toLowerCase();
+        const list = q ? (state.irBrands || []).filter((b) => b.label.toLowerCase().includes(q)) : popularBrands();
+        $('#sBrands', el).innerHTML = list.slice(0, 24).map((b) => `<button class="btn ghost" data-irb="${esc(b.id)}">${esc(b.label)}${b.sets.length > 1 ? ` <small>(${b.sets.length})</small>` : ''}</button>`).join('')
+          || '<p class="sub">No code set for that brand yet. Try “Don\'t know the brand”.</p>';
+        $$('[data-irb]', el).forEach((btn) => btn.onclick = () => {
+          const b = state.irBrands.find((x) => x.id === btn.dataset.irb);
+          irTestSheet(b.sets, 0, b.label);
+        });
+      };
+      box.oninput = show;
+      show();
+      $('#sFind', el).onclick = () => irTestSheet(allSetsPopularFirst(), 0, 'Any brand');
+    }
     $$('[data-pick]', el).forEach((b) => b.onclick = () => { closeSheet(); selectDevice(state.devices.find((d) => d.id === b.dataset.pick)); });
     $('#sScan', el).onclick = () => scan($('#scanOut', el));
     $('#sManual', el).onclick = manualAdd;
   });
 }
 
-// "Find my TV": tries each infra-red code set with Volume + until the user sees the TV react.
-async function findMyTv(i) {
-  const brands = state.irBrands || [];
-  if (i >= brands.length) {
-    openSheet(`<h2>Find my TV</h2><p class="sub">None of the ${brands.length} code sets worked. Check that you point the top of the phone at the TV from 1–3 metres, then try again. This TV brand may not be supported yet — tell us the brand on GitHub.</p>
-      <div class="row gap"><button class="btn" id="fAgain">Start again</button></div>`, (el) => { $('#fAgain', el).onclick = () => findMyTv(0); });
-    return;
-  }
-  const b = brands[i];
-  const send = () => api('/ir/test', { body: { brand: b.id, key: 'vol_up' } }).catch((e) => toast(e.message, true));
-  openSheet(`<h2>Find my TV</h2>
-    <p class="sub">Point the phone at the TV. Trying code set <b>${i + 1} of ${brands.length}: ${esc(b.label)}</b> (Volume +).</p>
-    <p style="font-size:18px;margin:14px 0">Did the TV's volume go up?</p>
-    <div class="row gap"><button class="btn" id="fYes">Yes, it worked</button><button class="btn ghost" id="fNo">No, try next</button></div>
-    <div class="row gap"><button class="btn ghost" id="fAgain">Send again</button></div>`, (el) => {
-    $('#fYes', el).onclick = async () => {
-      await api('/ir/test', { body: { brand: b.id, key: 'vol_down' } }).catch(() => {}); // put the volume back
-      addDevice({ type: 'ir', brand: b.id });
-    };
-    $('#fNo', el).onclick = () => findMyTv(i + 1);
-    $('#fAgain', el).onclick = send;
+// ---- Infra-red code finder: test a brand's code sets right here, then keep the one that works.
+const POPULAR_IR = ['samsung', 'lg', 'sony', 'sharp', 'panasonic', 'toshiba', 'tcl', 'hisense', 'philips', 'xiaomi', 'haier', 'hitachi', 'sanyo', 'akai', 'jvc', 'daewoo'];
+const popularBrands = () => POPULAR_IR.map((id) => (state.irBrands || []).find((b) => b.id === id)).filter(Boolean);
+function allSetsPopularFirst() {
+  const brands = [...popularBrands(), ...(state.irBrands || []).filter((b) => !POPULAR_IR.includes(b.id))];
+  return brands.flatMap((b) => b.sets);
+}
+const IR_TEST_KEYS = [['vol_up', 'Vol +'], ['vol_down', 'Vol −'], ['mute', 'Mute'], ['ch_up', 'CH +'], ['ch_down', 'CH −'], ['power', 'Power']];
+
+function irTestSheet(sets, i, title, autoSend = true) {
+  if (!sets.length) return;
+  i = (i + sets.length) % sets.length;
+  const set = sets[i];
+  const test = async (key) => {
+    buzz();
+    try { await api('/ir/test', { body: { brand: set.id, key } }); }
+    catch (e) { toast(e.message, true); }
+  };
+  openSheet(`<h2>${esc(title)}</h2>
+    <p class="sub">Point the top of the phone at the TV and press a button. ${sets.length > 1 ? `Code <b>${i + 1} of ${sets.length}</b>: ${esc(set.label)}.` : esc(set.label)}</p>
+    <div class="ir-test">${IR_TEST_KEYS.map(([k, n]) => `<button class="btn ghost" data-t="${k}">${n}</button>`).join('')}</div>
+    <p style="margin:12px 0 4px">Did the TV react?</p>
+    <div class="row gap"><button class="btn" id="tYes">Yes — use this code</button></div>
+    ${sets.length > 1 ? `<div class="row gap"><button class="btn ghost" id="tPrev">‹ Previous</button><button class="btn ghost" id="tNext">No — next code ›</button></div>` : ''}`, (el) => {
+    $$('[data-t]', el).forEach((b) => b.onclick = () => test(b.dataset.t));
+    $('#tYes', el).onclick = () => addDevice({ type: 'ir', brand: set.id });
+    if ($('#tNext', el)) {
+      $('#tNext', el).onclick = () => irTestSheet(sets, i + 1, title);
+      $('#tPrev', el).onclick = () => irTestSheet(sets, i - 1, title);
+    }
   });
-  buzz(20);
-  send();
+  if (autoSend) setTimeout(() => test('vol_up'), 300); // each code is tried once with Volume + straight away
 }
 
 const NATIVE_TYPES = ['sony', 'androidtv', 'roku'];

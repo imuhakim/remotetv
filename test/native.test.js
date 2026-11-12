@@ -129,8 +129,8 @@ function mockPlugin() {
   };
 }
 
-function loadApp(plugin) {
-  const store = new Map();
+function loadApp(plugin, initial = {}) {
+  const store = new Map(Object.entries(initial));
   const window = {
     Capacitor: { registerPlugin: () => plugin },
     forge, protobuf, TV_PROTOS,
@@ -141,6 +141,7 @@ function loadApp(plugin) {
     localStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) },
   });
   for (const f of ['native/ircodes.js', 'native/drivers.js', 'native/adb.js', 'native/helper.js', 'native/backend.js']) vm.runInContext(fs.readFileSync(path.join(root, 'public', f), 'utf8'), ctx, { filename: f });
+  window.NativeBackend.win = window; // tests only
   return window.NativeBackend;
 }
 
@@ -539,79 +540,118 @@ test('APK Draw on TV: pairs with the TV Helper once, then streams strokes', asyn
   await be.request('DELETE', `/devices/${dev.id}`);
 });
 
-test('APK infra-red code sets from IRDB: Toshiba, Sharp, Panasonic, Philips RC5, TCL', async () => {
-  const sent = [];
-  const be = loadApp({ ...mockPlugin(), irInfo: async () => ({ hasIr: true }), irTransmit: async (o) => { sent.push(o); } });
-  const brands = await be.request('GET', '/ir/brands');
-  for (const id of ['sony', 'samsung', 'lg', 'toshiba', 'sharp', 'panasonic', 'philips', 'tcl', 'sanyo', 'hitachi']) {
-    assert.ok(brands.some((b) => b.id === id), `${id} listed`);
-  }
-  const key = async (brand, k) => {
-    const d = await be.request('POST', '/devices', { type: 'ir', brand });
-    await be.request('POST', `/devices/${d.id}/connect`, {});
-    await be.request('POST', `/devices/${d.id}/key`, { key: k });
-    return sent[sent.length - 1];
-  };
-  // Pulse-distance decoder: header pair, then (mark, space) per bit; long space = 1.
-  const pd = (p, start, n, threshold) => {
-    const bits = [];
-    for (let i = 0; i < n; i++) bits.push(p[start + i * 2 + 1] > threshold ? 1 : 0);
-    return bits;
-  };
-  const num = (bits, lsbFirst = true) => (lsbFirst ? bits : [...bits].reverse()).reduce((a, b, i) => a | (b << i), 0);
+test('APK infra-red: every protocol encoder decodes back to its codes', () => {
+  const be = loadApp({ ...mockPlugin(), irInfo: async () => ({ hasIr: true }) });
+  const { encode } = be.win.NativeTv.ir;
+  const pd = (p, start, n, threshold) => Array.from({ length: n }, (_, i) => (p[start + i * 2 + 1] > threshold ? 1 : 0));
+  const num = (bits, lsbFirst = true) => (lsbFirst ? bits : [...bits].reverse()).reduce((a, b, i) => a + b * 2 ** i, 0);
   const bytes = (bits) => Array.from({ length: bits.length / 8 }, (_, i) => num(bits.slice(i * 8, i * 8 + 8)));
+  const nec = (code) => { const e = encode(code, {}); return { header: [e.pattern[0], e.pattern[1]], b: bytes(pd(e.pattern, 2, 32, 1000)), f: e.freq }; };
 
-  // Toshiba: NEC, address 0x40, POWER = 18 (0x12)
-  const tosh = await key('toshiba', 'power');
-  assert.equal(tosh.frequency, 38000);
-  assert.deepEqual([tosh.pattern[0], tosh.pattern[1]], [9000, 4500]);
-  assert.deepEqual(bytes(pd(tosh.pattern, 2, 32, 1000)), [0x40, 0xbf, 0x12, 0xed]);
-  assert.deepEqual(bytes(pd((await key('toshiba', 'vol_up')).pattern, 2, 32, 1000)).slice(2), [26, 229]);
+  // NEC family: Toshiba power (IRDB NEC1 64/18) == Flipper NEC == Flipper NECext with explicit bytes
+  assert.deepEqual(nec(['nec1', 64, 18]).b, [0x40, 0xbf, 0x12, 0xed]);
+  assert.deepEqual(nec(['nec', 64, 18]).b, [0x40, 0xbf, 0x12, 0xed]);
+  assert.deepEqual(nec(['necext', 0xbf40, 0xed12]).b, [0x40, 0xbf, 0x12, 0xed]);
+  assert.deepEqual(nec(['necext', 0x7f00, 0x15]).b, [0x00, 0x7f, 0x15, 0x00], 'NECext keeps both address bytes');
+  // Samsung32 / NECx2: 4.5 ms header, address twice
+  assert.deepEqual(nec(['samsung32', 7, 2]), { header: [4500, 4500], b: [7, 7, 2, 0xfd], f: 38000 });
+  assert.deepEqual(nec(['necx', 7, 2, 7]).b, [7, 7, 2, 0xfd]);
+  assert.equal(nec(['pioneer', 170, 28]).f, 40000);
 
-  // Sharp: D=1, POWER = 22; two frames: (D, F, ext 1) then (D, ~F, ext 2)
-  const sh = (await key('sharp', 'power')).pattern;
-  const f1 = pd(sh, 0, 15, 1200); // no header: bit i space is at 2i+1
-  assert.equal(num(f1.slice(0, 5)), 1);
-  assert.equal(num(f1.slice(5, 13)), 22);
-  assert.equal(num(f1.slice(13, 15)), 1);
-  const f2 = pd(sh, 32, 15, 1200); // after 15 bits, stop mark and gap
-  assert.equal(num(f2.slice(5, 13)), (~22) & 0xff);
-  assert.equal(num(f2.slice(13, 15)), 2);
+  // Kaseikyo (Flipper Panasonic power) is the same frame as IRDB Panasonic 128/61
+  assert.deepEqual(encode(['kaseikyo', 0x200280, 0x3d0], {}).pattern, encode(['panasonic', 128, 61, 0], {}).pattern);
+  const ka = encode(['panasonic', 128, 61, 0], {});
+  assert.deepEqual(bytes(pd(ka.pattern, 2, 48, 864)), [0x02, 0x20, 128, 0, 61, 128 ^ 61]);
 
-  // Panasonic: 0x02 0x20 D=128 S=0 F=61 (D^S^F)
-  const pa = await key('panasonic', 'power');
-  assert.equal(pa.frequency, 37000);
-  assert.deepEqual(bytes(pd(pa.pattern, 2, 48, 864)), [0x02, 0x20, 128, 0, 61, 128 ^ 61]);
+  // Sharp: two frames (D, F, 1) and (D, ~F, 2)
+  const sh = encode(['sharp', 1, 22], {}).pattern;
+  assert.deepEqual([num(pd(sh, 0, 5, 1200)), num(pd(sh, 0, 15, 1200).slice(5, 13)), num(pd(sh, 0, 15, 1200).slice(13))], [1, 22, 1]);
+  assert.equal(num(pd(sh, 32, 15, 1200).slice(5, 13)), (~22) & 0xff);
 
-  // Philips RC5: Manchester, D=0, POWER = 12, toggle bit flips each press
-  const rc5Bits = (p) => {
-    const levels = [0]; // the invisible first half of the start bit
-    p.forEach((d, i) => { for (let k = 0; k < Math.round(d / 889); k++) levels.push(i % 2 === 0 ? 1 : 0); });
-    while (levels.length < 28) levels.push(0);
-    return Array.from({ length: 14 }, (_, i) => (levels[i * 2] === 0 && levels[i * 2 + 1] === 1 ? 1 : 0));
+  // RC5: Manchester, toggle flips between presses
+  const manchester = (p, unit, first) => {
+    const lv = [...first];
+    p.forEach((d, i) => { for (let k = 0; k < Math.round(d / unit); k++) lv.push(i % 2 === 0 ? 1 : 0); });
+    return lv;
   };
-  const ph1 = rc5Bits((await key('philips', 'power')).pattern);
-  assert.equal(ph1[0], 1, 'start bit');
-  assert.equal(ph1[1], 1, 'field bit (command < 64)');
-  assert.equal(num(ph1.slice(3, 8), false), 0, 'device');
-  assert.equal(num(ph1.slice(8, 14), false), 12, 'command');
-  const ph2 = rc5Bits((await key('philips', 'vol_up')).pattern);
-  assert.equal(num(ph2.slice(8, 14), false), 16);
+  const st = {};
+  const r1 = manchester(encode(['rc5', 0, 12], st).pattern, 889, [0]);
+  const rc5 = (lv) => Array.from({ length: 14 }, (_, i) => (lv[i * 2] === 0 && lv[i * 2 + 1] === 1 ? 1 : 0));
+  const b1 = rc5(r1);
+  assert.deepEqual([b1[0], b1[1], num(b1.slice(3, 8), false), num(b1.slice(8, 14), false)], [1, 1, 0, 12]);
+  const b2 = rc5(manchester(encode(['rc5', 0, 12], st).pattern, 889, [0]));
+  assert.notEqual(b1[2], b2[2], 'toggle bit');
+  assert.equal(rc5(manchester(encode(['rc5', 5, 0x41], {}).pattern, 889, [0]))[1], 0, 'RC5X field bit for command >= 64');
 
-  // TCL: RCA-38, MSB first, D=15 (4 bits) POWER = 42, then ~D ~F
-  const tcl = (await key('tcl', 'power')).pattern;
-  assert.deepEqual([tcl[0], tcl[1]], [3680, 3680]);
-  const tb = pd(tcl, 2, 24, 1400);
-  assert.equal(num(tb.slice(0, 4), false), 15);
-  assert.equal(num(tb.slice(4, 12), false), 42);
-  assert.equal(num(tb.slice(12, 16), false), 0);
-  assert.equal(num(tb.slice(16, 24), false), (~42) & 0xff);
+  // RC6 mode 0: leader 2666/889, then "1" = mark-space halves of 444 us, toggle bit double
+  const r6 = encode(['rc6', 0, 12], {}).pattern;
+  assert.deepEqual([r6[0], r6[1]], [2666, 889]);
+  const lv6 = manchester(r6.slice(2), 444, []);
+  const halves = [1, 1, 1, 1, 2, ...Array(16).fill(1)];
+  let pos = 0;
+  const bits6 = halves.map((h) => { const b = lv6[pos]; pos += 2 * h; return b; });
+  assert.deepEqual([bits6[0], num(bits6.slice(1, 4), false), num(bits6.slice(5, 13), false), num(bits6.slice(13, 21), false)], [1, 0, 0, 12]);
 
-  // Older Toshiba remotes have no arrows: CH/VOL act as cursor keys in menus.
-  assert.deepEqual(bytes(pd((await key('toshiba', 'up')).pattern, 2, 32, 1000))[2], 27);
-  // "Find my TV" sends a test key without saving a TV.
-  const before = sent.length;
-  await be.request('POST', '/ir/test', { brand: 'hitachi', key: 'vol_up' });
-  assert.deepEqual(bytes(pd(sent[before].pattern, 2, 32, 1000)), [80, 175, 18, 237]);
-  for (const s of sent) assert.equal(s.pattern.length % 2, 1, 'every pattern starts and ends with a mark');
+  // Sony: Flipper SIRC20 address = IRDB Sony20 device + subdevice << 5
+  assert.deepEqual(encode(['sirc20', 26 + (73 << 5), 21], {}).pattern, encode(['sony20', 26, 21, 73], {}).pattern);
+  assert.deepEqual(encode(['sirc12', 1, 21], {}).pattern, encode(['sony12', 1, 21], {}).pattern);
+
+  // RCA (Flipper, LSB first) and RCA-38 (IRDB, MSB first)
+  const rf = encode(['rcaf', 15, 42], {}).pattern;
+  assert.deepEqual([rf[0], rf[1]], [4000, 4000]);
+  const rfb = pd(rf, 2, 24, 1500);
+  assert.deepEqual([num(rfb.slice(0, 4)), num(rfb.slice(4, 12)), num(rfb.slice(12, 16)), num(rfb.slice(16))], [15, 42, 0, (~42) & 0xff]);
+  const r38 = pd(encode(['rca38', 15, 42], {}).pattern, 2, 24, 1400);
+  assert.deepEqual([num(r38.slice(0, 4), false), num(r38.slice(4, 12), false)], [15, 42]);
+  assert.equal(encode(['rca', 15, 42], {}).freq, 56000);
+
+  // JVC, Mitsubishi, Proton, Emerson
+  assert.deepEqual(bytes(pd(encode(['jvc', 3, 23], {}).pattern, 2, 16, 1000)), [3, 23]);
+  assert.deepEqual(bytes(pd(encode(['mitsubishi', 71, 24], {}).pattern, 0, 16, 1500)), [71, 24]);
+  const pr = encode(['proton', 1, 20], {}).pattern;
+  assert.deepEqual([num(pd(pr, 2, 8, 1000)), num(pd(pr, 20, 8, 1000))], [1, 20]);
+  const em = pd(encode(['emerson', 4, 10], {}).pattern, 2, 24, 1700);
+  assert.deepEqual([num(em.slice(0, 6)), num(em.slice(6, 12)), num(em.slice(12, 18)), num(em.slice(18))], [4, 10, 59, 53]);
+
+  // Raw recordings are sent as recorded (odd length: ends on a mark)
+  assert.deepEqual(encode(['raw', 38000, [9000, 4500, 560]], {}), { freq: 38000, pattern: [9000, 4500, 560] });
+});
+
+test('APK infra-red catalogue: 100+ brands, code sets per brand, test without saving, readable names', async () => {
+  const sent = [];
+  const plugin = { ...mockPlugin(), irInfo: async () => ({ hasIr: true }), irTransmit: async (o) => { sent.push(o); } };
+  // A TV saved by v1.1.14 with the wrong name gets renamed.
+  const old = { devices: [{ id: 'old1', type: 'ir', brand: 'toshiba', host: 'infra-red-toshiba', name: 'ir infra-red-toshiba' }], lastDeviceId: null };
+  const be = loadApp(plugin, { 'remotetv.native.store': JSON.stringify(old) });
+  assert.equal((await be.request('GET', '/devices'))[0].name, 'Toshiba TV (infra-red)');
+
+  const cat = await be.request('GET', '/ir/brands');
+  assert.ok(cat.length >= 100, `${cat.length} brands`);
+  for (const id of ['samsung', 'lg', 'sony', 'toshiba', 'sharp', 'panasonic', 'philips', 'tcl', 'hisense', 'xiaomi', 'haier', 'hitachi', 'akai']) {
+    assert.ok(cat.some((b) => b.id === id), `${id} listed`);
+  }
+  const ids = cat.flatMap((b) => b.sets.map((s) => s.id));
+  assert.equal(new Set(ids).size, ids.length, 'code set ids are unique');
+  const tosh = cat.find((b) => b.id === 'toshiba');
+  assert.ok(tosh.sets.length > 1);
+  assert.equal(tosh.sets[1].id, 'toshiba-2');
+
+  // Every code set can send Volume + or Power without throwing (all protocols are supported).
+  let tested = 0;
+  for (const id of ids) {
+    try { await be.request('POST', '/ir/test', { brand: id, key: 'vol_up' }); tested++; }
+    catch { await be.request('POST', '/ir/test', { brand: id, key: 'power' }); tested++; }
+  }
+  assert.equal(tested, ids.length);
+  for (const s of sent) {
+    assert.equal(s.pattern.length % 2, 1, 'starts and ends with a mark');
+    assert.ok(s.pattern.every((d) => Number.isInteger(d) && d > 0), 'positive whole microseconds');
+    assert.ok(s.frequency >= 30000 && s.frequency <= 60000, `carrier ${s.frequency}`);
+    assert.ok(s.pattern.reduce((a, b) => a + b, 0) < 2e6, 'under 2 s (Android limit)');
+  }
+
+  const d = await be.request('POST', '/devices', { type: 'ir', brand: 'toshiba-2' });
+  assert.equal(d.name, 'Toshiba TV (infra-red, code 2)');
+  await be.request('POST', `/devices/${d.id}/connect`, {});
+  await be.request('POST', `/devices/${d.id}/key`, { key: 'power' });
 });

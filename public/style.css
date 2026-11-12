@@ -251,3 +251,8 @@ body.simple .rlabel b { font-size: 26px; }
 .draw-tools select { margin-left: auto; }
 .draw-btns { flex-wrap: wrap; }
 .draw-btns .btn { flex: 1; }
+
+/* ---------- infra-red code tester */
+.ir-test { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.ir-test .btn { padding: 14px 6px; font-size: 15px; }
+#sBrands .btn small { opacity: .6; }

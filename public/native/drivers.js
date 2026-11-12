@@ -502,7 +502,9 @@
     guide: 0xa9, play: 0xb0, pause: 0xba, stop: 0xb1, rewind: 0x8f, forward: 0x8e, red: 0x72, green: 0x71, yellow: 0x63, blue: 0x61,
     ...digits([0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19]),
   };
-  // ---- more protocols, for the IRDB code sets in ircodes.js (IRP notation from irdb/makehex)
+  // ---- protocols for the code sets in ircodes.js (Flipper-IRDB and IRDB).
+  // IRDB timings follow the IRP notation (irdb/makehex); Flipper ones follow the
+  // Flipper Zero firmware encoders (lib/infrared/encoder_decoder).
   // Turns signed durations (+mark, -space) into alternating on/off times, merging
   // neighbours of the same kind, and drops the trailing gap so it ends on a mark.
   function durations(list) {
@@ -518,54 +520,144 @@
     if (out.length % 2 === 0) out.pop();
     return out.map(Math.round);
   }
-  const lsb = (v, n) => Array.from({ length: n }, (_, i) => (v >> i) & 1);
-  const msb = (v, n) => Array.from({ length: n }, (_, i) => (v >> (n - 1 - i)) & 1);
+  const lsb = (v, n) => Array.from({ length: n }, (_, i) => Math.floor(v / 2 ** i) % 2);
+  const msb = (v, n) => lsb(v, n).reverse();
   const pulseBits = (bits, u, zero, one) => bits.flatMap((b) => [u, -(b ? one : zero) * u]);
+  const bytesLsb = (bytes) => bytes.flatMap((b) => lsb(b & 0xff, 8));
+  const nec32 = (header, bytes, freq = 38000) => ({ freq, pattern: durations([...header, ...pulseBits(bytesLsb(bytes), 560, 1, 3.018), 560]) });
+  const sirc = (fields) => ({ freq: 40000, pattern: sircPattern(fields) });
+  const inv = (v) => ~v & 0xff;
+  // Each encoder takes (address, command, subdevice, state) and returns { freq, pattern }.
   const ENCODERS = {
-    // NEC1 {38.4k,564}<1,-1|1,-3>(16,-8,D:8,S:8,F:8,~F:8,1,-78); S defaults to ~D
-    nec1: (d, s, f) => ({ freq: 38000, pattern: necPatternS(d, s < 0 ? ~d & 0xff : s, f) }),
+    // NEC1 / NEC / NEC2 (IRDB): D, S (default ~D), F, ~F
+    nec1: (a, c, s) => nec32([9000, -4500], [a, s === undefined || s < 0 ? inv(a) : s, c, inv(c)]),
+    // Flipper NEC: 8-bit address and command
+    nec: (a, c) => nec32([9000, -4500], [a, inv(a), c, inv(c)]),
+    // Flipper NECext: 16-bit address and 16-bit command, sent as-is
+    necext: (a, c) => nec32([9000, -4500], [a & 0xff, a >> 8, c & 0xff, c >> 8]),
+    // Samsung32 (Flipper) / NECx (IRDB): 4.5 ms header, D, D (or S), F, ~F
+    samsung32: (a, c) => nec32([4500, -4500], [a, a, c, inv(c)]),
+    necx: (a, c, s) => nec32([4500, -4500], [a, s === undefined || s < 0 ? a : s, c, inv(c)]),
+    // Pioneer: NEC frame on a 40 kHz carrier
+    pioneer: (a, c, s) => nec32([9000, -4500], [a, s === undefined || s < 0 ? inv(a) : s, c, inv(c)], 40000),
     // Sharp {38k,264}<1,-3|1,-7>(D:5,F:8,1:2,1,-165,D:5,~F:8,2:2,1,-165)
-    sharp: (d, s, f) => {
+    sharp: (a, c) => {
       const u = 264;
-      const frame = (cmd, ext) => [...pulseBits([...lsb(d, 5), ...lsb(cmd, 8), ...lsb(ext, 2)], u, 3, 7), u, -165 * u];
-      return { freq: 38000, pattern: durations([...frame(f, 1), ...frame(~f & 0xff, 2)]) };
+      const frame = (cmd, ext) => [...pulseBits([...lsb(a, 5), ...lsb(cmd, 8), ...lsb(ext, 2)], u, 3, 7), u, -165 * u];
+      return { freq: 38000, pattern: durations([...frame(c, 1), ...frame(inv(c), 2)]) };
     },
-    // Panasonic {37k,432}<1,-1|1,-3>(8,-4,2:8,32:8,D:8,S:8,F:8,(D^S^F):8,1,-173)
-    panasonic: (d, s, f) => {
+    // Panasonic (IRDB) {37k,432}<1,-1|1,-3>(8,-4,2:8,32:8,D:8,S:8,F:8,(D^S^F):8,1,-173)
+    panasonic: (a, c, s = 0) => {
       const u = 432;
-      const bytes = [0x02, 0x20, d, s, f, (d ^ s ^ f) & 0xff];
-      return { freq: 37000, pattern: durations([8 * u, -4 * u, ...pulseBits(bytes.flatMap((b) => lsb(b, 8)), u, 1, 3), u, -173 * u]) };
+      const sub = s < 0 ? 0 : s;
+      return { freq: 37000, pattern: durations([8 * u, -4 * u, ...pulseBits(bytesLsb([0x02, 0x20, a, sub, c, a ^ sub ^ c]), u, 1, 3), u, -173 * u]) };
     },
-    // RC5 {36k,msb,889}<1,-1|-1,1>(1,~F:1:6,T:1,D:5,F:6,^114m): Manchester, toggle bit flips per press
-    rc5: (d, s, f, st) => {
+    // Kaseikyo (Flipper): address = id<<24 | vendor<<8 | genre1<<4 | genre2, 10-bit command
+    kaseikyo: (a, c) => {
+      const u = 432;
+      const id = Math.floor(a / 2 ** 24) & 3;
+      const vendor = Math.floor(a / 256) & 0xffff;
+      const d = [vendor & 0xff, vendor >> 8];
+      let vp = d[0] ^ d[1];
+      vp = (vp & 0xf) ^ (vp >> 4);
+      d[2] = (vp & 0xf) | (((a >> 4) & 0xf) << 4);
+      d[3] = (a & 0xf) | ((c & 0xf) << 4);
+      d[4] = ((id << 6) | (c >> 4)) & 0xff;
+      d[5] = d[2] ^ d[3] ^ d[4];
+      return { freq: 37000, pattern: durations([8 * u, -4 * u, ...pulseBits(bytesLsb(d), u, 1, 3), u, -173 * u]) };
+    },
+    // RC5 / RC5X {36k,msb,889}<1,-1|-1,1>(1,~F:1:6,T:1,D:5,F:6,^114m): toggle bit flips per press
+    rc5: (a, c, s, st) => {
       const u = 889;
       st.t = st.t ? 0 : 1;
-      const bits = [(~f >> 6) & 1, st.t, ...msb(d, 5), ...msb(f & 0x3f, 6)];
+      const bits = [(~c >> 6) & 1, st.t, ...msb(a, 5), ...msb(c & 0x3f, 6)];
       return { freq: 36000, pattern: durations([u, ...bits.flatMap((b) => (b ? [-u, u] : [u, -u]))]) };
     },
-    // RCA-38 {38.7k,460,msb}<1,-2|1,-4>(8,-8,D:4,F:8,~D:4,~F:8,1,-16)
-    rca38: (d, s, f) => {
+    // RC6 mode 0 (Flipper): leader 2666/889, start 1, mode 000, toggle (double), A:8, C:8 MSB first; "1" = mark then space
+    rc6: (a, c, s, st) => {
+      const u = 444;
+      st.t6 = st.t6 ? 0 : 1;
+      const bits = [[1, u], [0, u], [0, u], [0, u], [st.t6, 2 * u], ...msb(a, 8).map((b) => [b, u]), ...msb(c, 8).map((b) => [b, u])];
+      return { freq: 36000, pattern: durations([2666, -889, ...bits.flatMap(([b, h]) => (b ? [h, -h] : [-h, h])), -27000]) };
+    },
+    // Sony SIRC (Flipper: address 5/8/13 bits; IRDB: Sony12/15/20 with D and S)
+    sirc12: (a, c) => sirc([[c, 7], [a, 5]]),
+    sirc15: (a, c) => sirc([[c, 7], [a, 8]]),
+    sirc20: (a, c) => sirc([[c, 7], [a, 13]]),
+    sony12: (a, c) => sirc([[c, 7], [a, 5]]),
+    sony15: (a, c) => sirc([[c, 7], [a, 8]]),
+    sony20: (a, c, s) => sirc([[c, 7], [a, 5], [s < 0 || s === undefined ? 0 : s, 8]]),
+    // RCA (Flipper): 24 bits LSB first of A:4 | C:8 | ~A:4 | ~C:8, 4 ms header
+    rcaf: (a, c) => {
+      const bits = [...lsb(a & 0xf, 4), ...lsb(c, 8), ...lsb(~a & 0xf, 4), ...lsb(inv(c), 8)];
+      return { freq: 38000, pattern: durations([4000, -4000, ...bits.flatMap((b) => [500, b ? -2000 : -1000]), 500]) };
+    },
+    // RCA-38 / RCA (IRDB) {38.7k|58k,460,msb}<1,-2|1,-4>(8,-8,D:4,F:8,~D:4,~F:8,1,-16)
+    rca38: (a, c) => {
       const u = 460;
-      const bits = [...msb(d, 4), ...msb(f, 8), ...msb(~d & 0xf, 4), ...msb(~f & 0xff, 8)];
+      const bits = [...msb(a, 4), ...msb(c, 8), ...msb(~a & 0xf, 4), ...msb(inv(c), 8)];
       return { freq: 38000, pattern: durations([8 * u, -8 * u, ...pulseBits(bits, u, 2, 4), u, -16 * u]) };
     },
+    rca: (a, c) => ({ ...ENCODERS.rca38(a, c), freq: 56000 }),
+    // JVC {38k,525}<1,-1|1,-3>(16,-8,D:8,F:8,1,-45)
+    jvc: (a, c) => ({ freq: 38000, pattern: durations([16 * 525, -8 * 525, ...pulseBits(bytesLsb([a, c]), 525, 1, 3), 525, -45 * 525]) }),
+    // Mitsubishi {32.6k,300}<1,-3|1,-7>(D:8,F:8,1,-80), sent twice
+    mitsubishi: (a, c) => {
+      const f = [...pulseBits(bytesLsb([a, c]), 300, 3, 7), 300, -80 * 300];
+      return { freq: 33000, pattern: durations([...f, ...f]) };
+    },
+    // Proton {38k,500}<1,-1|1,-3>(16,-8,D:8,1,-8,F:8,1,^63m)
+    proton: (a, c) => ({ freq: 38000, pattern: durations([8000, -4000, ...pulseBits(bytesLsb([a]), 500, 1, 3), 500, -4000, ...pulseBits(bytesLsb([c]), 500, 1, 3), 500]) }),
+    // Emerson {36.7k,872}<1,-1|1,-3>(4,-4,D:6,F:6,~D:6,~F:6,1,-39)
+    emerson: (a, c) => {
+      const u = 872;
+      const bits = [...lsb(a, 6), ...lsb(c, 6), ...lsb(~a & 0x3f, 6), ...lsb(~c & 0x3f, 6)];
+      return { freq: 37000, pattern: durations([4 * u, -4 * u, ...pulseBits(bits, u, 1, 3), u]) };
+    },
   };
-  function necPatternS(addr, sub, cmd) { return pulse32([9000, 4500], [addr, sub, cmd, ~cmd & 0xff]); }
+  function encode(code, st) {
+    if (!code) return null;
+    if (code[0] === 'raw') return { freq: code[1] || 38000, pattern: durations(code[2].map((d, i) => (i % 2 ? -d : d))) };
+    const enc = ENCODERS[code[0]];
+    return enc ? enc(code[1], code[2], code[3], st) : null;
+  }
 
   const BUILT_IN = {
-    sony: { label: 'Sony', pattern: (k) => SONY_IR[k] && { freq: 40000, pattern: sircPattern(irccToSirc(SONY_IR[k]).bits) } },
-    samsung: { label: 'Samsung', pattern: (k) => SAMSUNG_IR[k] !== undefined && { freq: 38000, pattern: samsungPattern(0x07, SAMSUNG_IR[k]) } },
-    lg: { label: 'LG', pattern: (k) => LG_IR[k] !== undefined && { freq: 38000, pattern: necPattern(0x04, LG_IR[k]) } },
+    sony: (k) => SONY_IR[k] && { freq: 40000, pattern: sircPattern(irccToSirc(SONY_IR[k]).bits) },
+    samsung: (k) => SAMSUNG_IR[k] !== undefined && { freq: 38000, pattern: samsungPattern(0x07, SAMSUNG_IR[k]) },
+    lg: (k) => LG_IR[k] !== undefined && { freq: 38000, pattern: necPattern(0x04, LG_IR[k]) },
   };
-  // Code sets: the three above plus every IRDB set in window.IR_CODES (loaded from ircodes.js).
-  function irBrands() {
-    const all = { ...BUILT_IN };
-    for (const [key, c] of Object.entries(window.IR_CODES || {})) {
-      if (!ENCODERS[c.proto]) continue;
-      all[key] = { label: c.label, pattern: (k, st) => c.keys[k] !== undefined && ENCODERS[c.proto](c.d, c.s, c.keys[k], st) };
+  const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  // All brands with their code sets: { id, label, sets: [{ id, label, pattern(key, state) }] }.
+  // A brand's first set has the brand id (e.g. "toshiba"), later ones "toshiba-2", ...
+  let brandCache;
+  function irCatalog() {
+    if (brandCache) return brandCache;
+    const list = [];
+    const byId = {};
+    for (const b of window.IR_CODES?.brands || []) {
+      const id = slug(b.name);
+      const sets = [];
+      if (BUILT_IN[id]) sets.push({ pattern: BUILT_IN[id] });
+      for (const set of b.sets) sets.push({ pattern: (k, st) => encode(set.k[k], st) });
+      sets.forEach((s, i) => {
+        s.id = i ? `${id}-${i + 1}` : id;
+        s.label = sets.length > 1 ? `${b.name} · code ${i + 1}` : b.name;
+        byId[s.id] = s;
+      });
+      list.push({ id, label: b.name, sets });
     }
-    return all;
+    for (const id of Object.keys(BUILT_IN)) {
+      if (byId[id]) continue;
+      const s = { id, label: id === 'lg' ? 'LG' : id[0].toUpperCase() + id.slice(1), pattern: BUILT_IN[id] };
+      byId[id] = s;
+      list.push({ id, label: s.label, sets: [s] });
+    }
+    list.sort((x, y) => x.label.localeCompare(y.label));
+    brandCache = { list, byId };
+    return brandCache;
   }
+  function irBrands() { return irCatalog().byId; }
 
   // Infra-red TV: device.brand picks the code set ("sony_ir" devices are Sony).
   class IrTv {
@@ -598,9 +690,11 @@
 
   window.NativeTv = { RemoteTv, req, xmlTag, drivers: { sony: Sony, roku: Roku, androidtv: AndroidTv, sony_ir: IrTv, ir: IrTv }, cast,
     ir: {
-      irccToSirc, sircPattern, necPattern, samsungPattern, SONY_IR, SAMSUNG_IR, LG_IR, ENCODERS, irTest,
+      irccToSirc, sircPattern, necPattern, samsungPattern, SONY_IR, SAMSUNG_IR, LG_IR, ENCODERS, encode, irTest,
       get BRANDS() { return Object.keys(irBrands()); },
       label: (b) => irBrands()[b]?.label || b,
+      brandLabel: (b) => irCatalog().list.find((x) => x.sets.some((s) => s.id === b))?.label || b,
+      catalog: () => irCatalog().list.map((b) => ({ id: b.id, label: b.label, sets: b.sets.map((s) => ({ id: s.id, label: s.label })) })),
     },
     net: { listenSockets, sockets, u8ToB64, b64ToU8, clientIdentity } };
 })();
