@@ -51,6 +51,12 @@
     return { device: d, driver: s.driver };
   }
 
+  function mediaMime(url) {
+    const ext = url.split(/[?#]/)[0].split('.').pop().toLowerCase();
+    return { mp4: 'video/mp4', mkv: 'video/x-matroska', webm: 'video/webm', mov: 'video/quicktime', m3u8: 'application/vnd.apple.mpegurl',
+      mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png' }[ext] || null;
+  }
+
   function err(status, message) { return Object.assign(new Error(message), { status }); }
 
   // ------------------------------------------------------------ discovery
@@ -204,6 +210,26 @@
       if (d.dialUrl) return cast.dialYouTube(d.dialUrl, v);
       throw err(400, 'Connect to the TV first, or scan so its DIAL service is found');
     }],
+    ['POST', /^\/devices\/(\w+)\/open$/, async (b, m) => {
+      // "Open on the TV": YouTube links go to the YouTube app, media files to
+      // the DLNA player, anything else to the TV's browser / app links.
+      const url = String(b.url || '').trim();
+      if (!/^https?:\/\//i.test(url)) throw err(400, 'Paste a link that starts with http:// or https://');
+      const d = getDev(m[1]);
+      if (!d) throw err(404, 'Unknown device');
+      let yt = null;
+      if (/youtu.?be/i.test(url)) try { yt = cast.youtubeId(url); } catch { /* not a video link */ }
+      if (yt) {
+        const s = sessions.get(d.id);
+        if (s?.status === 'connected' && s.driver.castYouTube) { await s.driver.castYouTube(yt); return { via: 'youtube' }; }
+        if (d.dialUrl) { await cast.dialYouTube(d.dialUrl, yt); return { via: 'youtube' }; }
+      }
+      const mime = mediaMime(url);
+      if (mime && d.dlna) { await cast.play(d.dlna, url, mime, url.split('/').pop()); return { via: 'dlna' }; }
+      const { driver } = await session(d.id);
+      if (driver.openUrl) { await driver.openUrl(url); return { via: 'browser' }; }
+      throw err(501, 'This TV cannot open links over this connection. Try the Android TV connection.');
+    }],
     ['POST', /^\/devices\/(\w+)\/cast\/control$/, async (b, m) => { await cast.control(dlnaOf(m[1]).dlna, b.action, b.value); }],
     ['GET', /^\/devices\/(\w+)\/cast\/status$/, async (b, m) => cast.status(dlnaOf(m[1]).dlna)],
   ];
@@ -225,5 +251,10 @@
     request,
     onEvent(cb) { listener = cb; },
     keepAwake(on) { return RemoteTv.keepAwake({ on }).catch(() => {}); },
+    // Links shared to the app from other apps (Share › RemoteTV).
+    onShared(cb) {
+      RemoteTv.addListener('shared', (e) => cb(e.text)).catch?.(() => {});
+      RemoteTv.takeShared().then((r) => { if (r?.text) cb(r.text); }).catch(() => {});
+    },
   };
 })();

@@ -27,6 +27,8 @@ See [docs/EVIDENCE.md](docs/EVIDENCE.md) for the analysis of the original app an
 
 - **Remote:** touchpad (swipe, tap = OK, hold = Back) or D-pad, volume and channel rockers with hold-to-repeat, live volume level, mute, home, back, all-apps sheet, input list, media keys, number pad, colour keys, info and guide.
 - **Quick access:** your own app shortcut row. Opens Netflix, YouTube, Prime Video, Disney+, Spotify or any app the TV reports.
+- **More menu:** *Open on the TV* (paste a link, or Share › RemoteTV from YouTube/Chrome), *Sleep timer*, *Scenes* (one tap runs steps such as power → wait → volume +5 → open YouTube), *Air Mouse* (hold and turn the phone to move), and *Simple mode* with big buttons.
+- **Now open:** shows which app is on screen (Android / Google TV).
 - **Keyboard:** type into the TV's search box (Sony, LG, Samsung, Roku).
 - **Voice:** speak a search; it opens TV search and types the words for you. Needs the HTTPS address.
 - **Cast:** push photos, videos and audio from the phone to the TV's built-in player (DLNA). Open YouTube or Shorts links on the TV (DIAL). Play any direct media URL. Pause, resume and stop from the phone.

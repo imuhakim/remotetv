@@ -407,6 +407,37 @@ public class RemoteTvPlugin extends Plugin {
         }).start();
     }
 
+    // ------------------------------------------------------- share to TV
+    private static String sharedText(Intent intent) {
+        if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())) return null;
+        CharSequence t = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+        return t == null ? null : t.toString();
+    }
+
+    /** Text shared to the app when it was launched by a Share action (then cleared). */
+    @PluginMethod
+    public void takeShared(PluginCall call) {
+        JSObject r = new JSObject();
+        Intent intent = getActivity().getIntent();
+        String text = sharedText(intent);
+        if (text != null) {
+            r.put("text", text);
+            intent.setAction(Intent.ACTION_MAIN);
+            intent.removeExtra(Intent.EXTRA_TEXT);
+        }
+        call.resolve(r);
+    }
+
+    @Override
+    protected void handleOnNewIntent(Intent intent) {
+        super.handleOnNewIntent(intent);
+        String text = sharedText(intent);
+        if (text == null) return;
+        JSObject ev = new JSObject();
+        ev.put("text", text);
+        notifyListeners("shared", ev, true);
+    }
+
     @Override
     protected void handleOnDestroy() {
         for (Conn c : conns.values()) {

@@ -140,6 +140,8 @@ class SonyDriver {
     return this.apps;
   }
 
+  async openUrl(url) { await this.rpc('appControl', 'setActiveApp', [{ uri: `localapp://webappruntime?url=${encodeURIComponent(url)}` }]); }
+
   async launchApp(id) {
     // id may be a Sony app URI or a friendly name such as "YouTube".
     let uri = id;

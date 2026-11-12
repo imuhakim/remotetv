@@ -146,7 +146,7 @@ button:active { background: var(--panel-2); }
 .field + .field { margin-top: 14px; }
 .row { display: flex; gap: 8px; margin-top: 6px; align-items: center; }
 .row.gap { margin-top: 10px; }
-input[type=text], input[type=url], input[type=password], input:not([type]), select, textarea {
+input[type=text], input[type=url], input[type=number], input[type=password], input:not([type]), select, textarea {
   flex: 1; min-width: 0; background: rgba(0, 0, 0, .3); color: var(--text); border: 1px solid var(--line);
   border-radius: 12px; padding: 11px 12px; outline: none;
 }
@@ -199,3 +199,29 @@ input[type=range] { accent-color: var(--accent); width: 120px; }
   .app i, .app img { width: 52px; height: 52px; }
   .navzone { min-height: 150px; }
 }
+
+/* ---------- phase 1: status strip, More sheet, scenes, air mouse, simple mode */
+.status-strip { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 28px; flex: none; color: var(--muted); font-size: 13.5px; }
+.status-strip b { color: var(--text); font-weight: 600; margin-left: 4px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; background: rgba(124, 92, 255, .18); color: #cbbcff; font-weight: 600; font-size: 13px; margin-left: auto; }
+.chip svg { width: 16px; height: 16px; }
+.more-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.more-grid button { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 16px 4px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--line); font-size: 13px; color: #dcd8ea; min-width: 0; }
+.more-grid button svg { width: 26px; height: 26px; }
+.more-grid button.on { border-color: var(--accent); background: rgba(124, 92, 255, .16); }
+.choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.choices .btn { text-align: center; }
+.scene-steps { margin: 8px 0 0; padding: 0; list-style: none; }
+.scene-steps li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.scene-steps li:first-child { border-top: 0; }
+.row select, .row input { min-width: 0; }
+.airpad { margin-top: 12px; height: 46vh; border-radius: 28px; display: grid; place-items: center; text-align: center; padding: 20px; background: radial-gradient(circle at 50% 40%, rgba(124, 92, 255, .28), var(--panel) 70%); border: 1px solid var(--line); color: var(--muted); user-select: none; -webkit-user-select: none; touch-action: none; }
+.airpad.active { border-color: var(--accent); color: var(--text); }
+.airpad b { display: block; font-size: 20px; color: var(--text); margin-bottom: 6px; }
+.airdot { width: 14px; height: 14px; border-radius: 50%; background: var(--accent-2); margin: 12px auto 0; transition: transform .08s; }
+body.simple .apps, body.simple .media, body.simple #touchpad, body.simple .modeswap, body.simple #btnVoice, body.simple #btnKeyboard { display: none !important; }
+body.simple #dpad { display: grid !important; }
+body.simple .dpad .d svg { width: 38px; height: 38px; }
+body.simple .dpad .ok { font-size: 22px; }
+body.simple .rlabel { font-size: 13px; }
+body.simple .rlabel b { font-size: 26px; }

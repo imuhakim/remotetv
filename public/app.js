@@ -13,7 +13,7 @@ const APP_COLORS = {
 };
 
 const settings = Object.assign({
-  nav: 'touchpad', haptic: true, smooth: true, awake: true, theater: false, sens: 40, shortcuts: DEFAULT_SHORTCUTS,
+  nav: 'touchpad', simple: false, haptic: true, smooth: true, awake: true, theater: false, sens: 40, shortcuts: DEFAULT_SHORTCUTS,
 }, safeJson(localStorage.getItem('remotetv.settings')));
 
 const state = { devices: [], current: null, info: null, pin: localStorage.getItem('remotetv.pin') || '', muted: false };
@@ -63,12 +63,14 @@ function toast(msg, err = false) {
 function buzz(ms = 12) { if (settings.haptic && navigator.vibrate) navigator.vibrate(ms); }
 
 function openSheet(html, onMount) {
+  airCleanup?.();
   $('#sheetBody').innerHTML = html;
   $('#scrim').classList.remove('hidden');
   requestAnimationFrame(() => $('#sheet').classList.add('open'));
   onMount?.($('#sheetBody'));
 }
 function closeSheet() {
+  airCleanup?.();
   $('#sheet').classList.remove('open');
   $('#scrim').classList.add('hidden');
 }
@@ -89,6 +91,8 @@ async function loadDevices() {
 
 async function selectDevice(d) {
   state.current = d;
+  state.currentApp = null;
+  renderStrip();
   setStatus('busy', d.name);
   try {
     const r = await api(`/devices/${d.id}/connect`, { body: {} });
@@ -96,6 +100,7 @@ async function selectDevice(d) {
     setStatus('on', d.name);
     applyState(r.state);
     loadShortcuts();
+    if (pendingShare) { const u = pendingShare; pendingShare = null; openOnTv(u); }
   } catch (e) {
     setStatus('err', d.name);
     toast(e.message, true);
@@ -252,6 +257,7 @@ $$('[data-key]').forEach((b) => {
 })();
 
 function applyNav() {
+  document.body.classList.toggle('simple', !!settings.simple);
   $('#touchpad').classList.toggle('hidden', settings.nav !== 'touchpad');
   $('#dpad').classList.toggle('hidden', settings.nav !== 'dpad');
   $('#setNav').value = settings.nav;
@@ -265,6 +271,7 @@ function applyState(s = {}) {
     $('#volFill').style.height = `${Math.min(100, (s.volume / (s.volumeMax || 100)) * 100)}%`;
   }
   if (s.muted !== undefined) $('#btnMute').classList.toggle('muted-on', !!s.muted);
+  if (s.currentApp !== undefined) { state.currentApp = s.currentApp; renderStrip(); }
   if (s.power === false) setStatus('', `${dev()?.name || 'TV'} · standby`);
   else if (s.power === true && dev()) setStatus('on', dev().name);
 }
@@ -273,7 +280,11 @@ function handleEvent(m) {
   if (!dev() || m.deviceId !== dev().id) return;
   if (m.type === 'state') applyState(m.payload);
   if (m.type === 'pairing') pairingSheet(m.payload);
-  if (m.type === 'paired') { setStatus('on', dev().name); toast('Connected ✓'); }
+  if (m.type === 'paired') {
+    setStatus('on', dev().name);
+    toast('Connected ✓');
+    if (pendingShare) { const u = pendingShare; pendingShare = null; openOnTv(u); }
+  }
   if (m.type === 'error') toast(m.payload, true);
 }
 
@@ -443,6 +454,289 @@ $$('[data-cast]').forEach((b) => b.onclick = async () => {
   catch (e) { toast(e.message, true); }
 });
 
+// ------------------------------------------------------------ now open
+const APP_NAMES = {
+  'com.google.android.youtube.tv': 'YouTube', 'com.google.android.youtube.tvkids': 'YouTube Kids', 'com.google.android.youtube.tvmusic': 'YouTube Music',
+  'com.netflix.ninja': 'Netflix', 'com.amazon.amazonvideo.livingroom': 'Prime Video', 'com.disney.disneyplus': 'Disney+',
+  'com.spotify.tv.android': 'Spotify', 'com.google.android.tvlauncher': 'Home', 'com.google.android.apps.tv.launcherx': 'Home',
+  'com.sony.dtv.tvx': 'TV', 'com.android.tv.settings': 'Settings', 'com.iqiyi.i18n.tv': 'iQIYI', 'com.vuclip.viu': 'Viu',
+  'org.xbmc.kodi': 'Kodi', 'com.plexapp.android': 'Plex', 'com.google.android.tv': 'Live TV', 'com.android.vending': 'Play Store',
+  'com.google.android.katniss': 'Google Assistant', 'com.android.chrome': 'Chrome',
+};
+function appLabel(pkg) {
+  if (APP_NAMES[pkg]) return APP_NAMES[pkg];
+  const parts = String(pkg).split('.').filter((p) => !/^(com|org|net|tv|android|app|apps|google|atv|androidtv|ui|main)$/i.test(p));
+  const w = parts.sort((a, b) => b.length - a.length)[0] || pkg;
+  return w.charAt(0).toUpperCase() + w.slice(1);
+}
+function renderStrip() {
+  const app = state.currentApp;
+  $('#nowOpen').classList.toggle('hidden', !app);
+  if (app) $('#nowApp').textContent = appLabel(app);
+  $('#sleepChip').classList.toggle('hidden', !sleep.end);
+  $('#statusStrip').classList.toggle('hidden', !app && !sleep.end);
+}
+
+// ------------------------------------------------------------ open on TV
+let pendingShare = null;
+async function openOnTv(url) {
+  if (!dev()) { pendingShare = url; deviceSheet(); return; }
+  try {
+    const r = await devApi('/open', { url });
+    toast(r?.via === 'youtube' ? 'Opening in YouTube on the TV' : r?.via === 'dlna' ? 'Playing on TV' : 'Opening on the TV');
+  } catch (e) { toast(e.message, true); }
+}
+function openLinkSheet(prefill = '') {
+  openSheet(`<h2>Open on the TV</h2><p class="sub">Paste a YouTube, web or video link. Tip: in any app, tap Share › RemoteTV.</p>
+    <div class="row gap"><input id="oUrl" type="url" value="${esc(prefill)}" placeholder="https://…" autocomplete="off"><button class="btn" id="oGo">Open</button></div>
+    <div class="row gap"><button class="btn ghost" id="oPaste">Paste from clipboard</button></div>`, (el) => {
+    const input = $('#oUrl', el);
+    const go = () => {
+      const m = /https?:\/\/\S+/i.exec(input.value);
+      if (!m) return toast('Paste a link that starts with https://', true);
+      closeSheet();
+      openOnTv(m[0]);
+    };
+    $('#oGo', el).onclick = go;
+    input.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+    $('#oPaste', el).onclick = async () => {
+      try { input.value = (await navigator.clipboard.readText()).trim(); } catch { toast('Long-press the box and choose Paste', true); }
+    };
+  });
+}
+function handleShared(text) {
+  const m = /https?:\/\/\S+/i.exec(text || '');
+  if (!m) { if (text) toast('Shared text has no link', true); return; }
+  if (dev() && $('#statusDot').classList.contains('on')) openOnTv(m[0]);
+  else { pendingShare = m[0]; toast('Connecting to TV…'); }
+}
+
+// ------------------------------------------------------------ sleep timer
+// The countdown runs on this phone: keep RemoteTV open (it can be in the
+// background) and on the same Wi-Fi until the timer ends.
+const sleep = safeJson(localStorage.getItem('remotetv.sleep'));
+let sleepTick;
+function saveSleep() { try { localStorage.setItem('remotetv.sleep', JSON.stringify(sleep)); } catch { /* ignore */ } }
+function startSleep(min) {
+  sleep.end = Date.now() + min * 60000;
+  sleep.device = dev()?.id;
+  saveSleep();
+  runSleep();
+  toast(`TV will turn off in ${min} min`);
+}
+function cancelSleep() { delete sleep.end; saveSleep(); clearInterval(sleepTick); renderStrip(); }
+function sleepLeftText() {
+  const m = Math.max(0, Math.ceil((sleep.end - Date.now()) / 60000));
+  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m} min`;
+}
+function runSleep() {
+  clearInterval(sleepTick);
+  renderStrip();
+  if (!sleep.end) return;
+  const tick = async () => {
+    if (sleep.end > Date.now()) { $('#sleepLeft').textContent = sleepLeftText(); return; }
+    const target = state.devices.find((d) => d.id === sleep.device) || dev();
+    cancelSleep();
+    if (!target) return;
+    try { await api(`/devices/${target.id}/key`, { body: { key: 'power_off' } }); }
+    catch {
+      try { await api(`/devices/${target.id}/key`, { body: { key: 'power' } }); }
+      catch (e) { toast(`Sleep timer: ${e.message}`, true); return; }
+    }
+    toast('Sleep timer: TV turned off');
+  };
+  tick();
+  sleepTick = setInterval(tick, 15000);
+}
+function sleepSheet() {
+  if (!dev()) return deviceSheet();
+  const opts = [15, 30, 45, 60, 90, 120];
+  const label = (m) => (m < 60 ? `${m} min` : m === 90 ? '1½ hours' : `${m / 60} hour${m > 60 ? 's' : ''}`);
+  openSheet(`<h2>Sleep timer</h2>
+    <p class="sub">${sleep.end ? `The TV turns off in <b>${sleepLeftText()}</b>.` : 'Turn the TV off after:'}</p>
+    <div class="choices">${opts.map((m) => `<button class="btn ghost" data-min="${m}">${label(m)}</button>`).join('')}</div>
+    ${sleep.end ? '<div class="row gap"><button class="btn danger" id="slCancel">Cancel timer</button></div>' : ''}
+    <p class="sub" style="margin-top:12px">Keep RemoteTV open (the background is fine) and stay on the same Wi-Fi.</p>`, (el) => {
+    $$('[data-min]', el).forEach((b) => b.onclick = () => { closeSheet(); startSleep(Number(b.dataset.min)); });
+    if ($('#slCancel', el)) $('#slCancel', el).onclick = () => { closeSheet(); cancelSleep(); toast('Sleep timer cancelled'); };
+  });
+}
+$('#sleepChip').onclick = sleepSheet;
+
+// ------------------------------------------------------------ scenes
+// A scene is a list of steps run in order: key presses, an app, typed text, waits.
+const KEY_CHOICES = [['power', 'Power'], ['home', 'Home'], ['back', 'Back'], ['ok', 'OK'], ['up', 'Up'], ['down', 'Down'], ['left', 'Left'], ['right', 'Right'],
+  ['vol_up', 'Volume +'], ['vol_down', 'Volume −'], ['mute', 'Mute'], ['ch_up', 'Channel +'], ['ch_down', 'Channel −'], ['input', 'Input / HDMI'],
+  ['play_pause', 'Play / Pause'], ...[...'0123456789'].map((n) => [n, `Number ${n}`])];
+const keyName = (k) => (KEY_CHOICES.find(([v]) => v === k) || [k, k])[1];
+const scenes = (() => { const s = safeJson(localStorage.getItem('remotetv.scenes')); return Array.isArray(s.list) ? s.list : []; })();
+function saveScenes() { try { localStorage.setItem('remotetv.scenes', JSON.stringify({ list: scenes })); } catch { /* ignore */ } }
+const stepText = (s) => (s.key ? `${keyName(s.key)}${s.times > 1 ? ` × ${s.times}` : ''}` : s.app ? `Open ${s.app}` : s.text ? `Type “${s.text}”` : `Wait ${s.wait} s`);
+
+function sceneMacro(sc) {
+  const steps = [];
+  for (const s of sc.steps) {
+    if (s.key) for (let i = 0; i < Math.min(s.times || 1, 30); i++) steps.push({ key: s.key, delay: 300 });
+    else if (s.app) steps.push({ app: s.app, delay: 1500 });
+    else if (s.text) steps.push({ text: s.text, delay: 500 });
+    else if (s.wait) steps.push({ delay: s.wait * 1000 });
+  }
+  return steps.slice(0, 50);
+}
+async function runScene(sc) {
+  if (!dev()) return deviceSheet();
+  toast(`Running “${sc.name}”`);
+  try { await devApi('/macro', { steps: sceneMacro(sc) }); toast(`“${sc.name}” done`); }
+  catch (e) { toast(e.message, true); }
+}
+function scenesSheet() {
+  openSheet(`<h2>Scenes</h2><p class="sub">One tap runs several steps, e.g. turn on → HDMI → volume up → open YouTube.</p>
+    <div class="card list">${scenes.map((sc, i) => `<div class="item"><div><b>${esc(sc.name)}</b><small>${esc(sc.steps.map(stepText).join(' → '))}</small></div>
+      <div class="dev-actions"><button class="btn small" data-run="${i}">Run</button><button class="btn small ghost" data-ed="${i}">Edit</button></div></div>`).join('')
+      || '<div class="item"><small>No scenes yet.</small></div>'}</div>
+    <div class="row gap"><button class="btn" id="scNew">New scene</button></div>`, (el) => {
+    $$('[data-run]', el).forEach((b) => b.onclick = () => { closeSheet(); runScene(scenes[b.dataset.run]); });
+    $$('[data-ed]', el).forEach((b) => b.onclick = () => sceneEditor(Number(b.dataset.ed)));
+    $('#scNew', el).onclick = () => sceneEditor(-1);
+  });
+}
+function sceneEditor(idx) {
+  const sc = idx >= 0 ? JSON.parse(JSON.stringify(scenes[idx])) : { name: '', steps: [] };
+  const render = () => openSheet(`<h2>${idx >= 0 ? 'Edit scene' : 'New scene'}</h2>
+    <div class="card">
+      <label class="field">Name<div class="row"><input id="scName" value="${esc(sc.name)}" placeholder="Movie night"></div></label>
+      <ul class="scene-steps">${sc.steps.map((s, i) => `<li><span>${i + 1}. ${esc(stepText(s))}</span><button class="btn small danger" data-rm="${i}" aria-label="Remove step">✕</button></li>`).join('') || '<li><small class="sub">Add steps below.</small></li>'}</ul>
+    </div>
+    <div class="card" style="margin-top:10px">
+      <label class="field">Add a step<div class="row"><select id="stType"><option value="key">Press a key</option><option value="app">Open an app</option><option value="text">Type text</option><option value="wait">Wait</option></select></div></label>
+      <div class="row" id="stKeyRow"><select id="stKey">${KEY_CHOICES.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select><input id="stTimes" type="number" min="1" max="30" value="1" style="width:70px" aria-label="Times"></div>
+      <div class="row hidden" id="stValRow"><input id="stVal"></div>
+      <div class="row gap"><button class="btn ghost" id="stAdd">Add step</button></div>
+    </div>
+    <div class="row gap"><button class="btn" id="scSave">Save</button>${idx >= 0 ? '<button class="btn danger" id="scDel">Delete</button>' : ''}<button class="btn ghost" id="scBack">Cancel</button></div>`, (el) => {
+    const type = $('#stType', el);
+    const sync = () => {
+      const t = type.value;
+      $('#stKeyRow', el).classList.toggle('hidden', t !== 'key');
+      $('#stValRow', el).classList.toggle('hidden', t === 'key');
+      $('#stVal', el).placeholder = { app: 'YouTube', text: 'upin ipin', wait: 'Seconds, e.g. 5' }[t] || '';
+      $('#stVal', el).inputMode = t === 'wait' ? 'numeric' : 'text';
+    };
+    type.onchange = sync;
+    sync();
+    $('#scName', el).oninput = (e) => { sc.name = e.target.value; };
+    $$('[data-rm]', el).forEach((b) => b.onclick = () => { sc.steps.splice(Number(b.dataset.rm), 1); render(); });
+    $('#stAdd', el).onclick = () => {
+      const t = type.value;
+      const v = $('#stVal', el).value.trim();
+      if (sc.steps.length >= 20) return toast('Up to 20 steps', true);
+      if (t === 'key') sc.steps.push({ key: $('#stKey', el).value, times: Math.max(1, Math.min(30, Number($('#stTimes', el).value) || 1)) });
+      else if (!v) return toast('Fill in the value', true);
+      else if (t === 'wait') sc.steps.push({ wait: Math.max(1, Math.min(10, Number(v) || 1)) });
+      else sc.steps.push({ [t]: v });
+      render();
+    };
+    $('#scSave', el).onclick = () => {
+      sc.name = sc.name.trim() || `Scene ${scenes.length + 1}`;
+      if (!sc.steps.length) return toast('Add at least one step', true);
+      if (idx >= 0) scenes[idx] = sc; else scenes.push(sc);
+      saveScenes();
+      scenesSheet();
+    };
+    if ($('#scDel', el)) $('#scDel', el).onclick = () => { if (confirm('Delete this scene?')) { scenes.splice(idx, 1); saveScenes(); scenesSheet(); } };
+    $('#scBack', el).onclick = scenesSheet;
+  });
+  render();
+}
+
+// ------------------------------------------------------------ air mouse
+// Hold the pad and turn your wrist: the gyroscope's turn becomes arrow
+// presses. A quick tap without moving = OK.
+let airCleanup = null;
+function airMouseSheet() {
+  if (!dev()) return deviceSheet();
+  openSheet(`<h2>Air Mouse</h2><p class="sub">Point the phone at the TV. <b>Hold</b> the pad and turn your wrist to move; <b>tap</b> for OK.</p>
+    <div class="airpad" id="airPad"><div><b>Hold &amp; turn</b>tap = OK<div class="airdot" id="airDot"></div></div></div>
+    <div class="row gap"><button class="btn ghost" id="airBack">Back</button><button class="btn ghost" id="airHome">Home</button></div>`, (el) => {
+    const pad = $('#airPad', el);
+    const dot = $('#airDot', el);
+    let holding = false, ax = 0, ay = 0, last = 0, moved = false, downAt = 0;
+    const stepDeg = () => 34 - settings.sens / 4; // degrees of turn per arrow press
+    const onMotion = (e) => {
+      if (!holding || !e.rotationRate) return;
+      const now = performance.now();
+      const dt = last ? Math.min(0.1, (now - last) / 1000) : 0;
+      last = now;
+      ax += -(e.rotationRate.alpha || 0) * dt; // turn left / right
+      ay += -(e.rotationRate.beta || 0) * dt; // tilt up / down
+      dot.style.transform = `translate(${Math.max(-60, Math.min(60, ax * 3))}px, ${Math.max(-60, Math.min(60, ay * 3))}px)`;
+      const s = stepDeg();
+      while (Math.abs(ax) >= s) { sendKey(ax > 0 ? 'right' : 'left'); ax -= Math.sign(ax) * s; moved = true; }
+      while (Math.abs(ay) >= s) { sendKey(ay > 0 ? 'down' : 'up'); ay -= Math.sign(ay) * s; moved = true; }
+    };
+    const start = async (e) => {
+      e.preventDefault();
+      if (typeof DeviceMotionEvent !== 'undefined' && DeviceMotionEvent.requestPermission) {
+        try { if (await DeviceMotionEvent.requestPermission() !== 'granted') { toast('Motion access denied', true); return; } } catch { /* ignore */ }
+      }
+      holding = true; moved = false; ax = 0; ay = 0; last = 0; downAt = Date.now();
+      pad.classList.add('active');
+    };
+    const end = () => {
+      if (!holding) return;
+      holding = false;
+      pad.classList.remove('active');
+      dot.style.transform = '';
+      if (!moved && Date.now() - downAt < 400) sendKey('ok');
+    };
+    if (typeof DeviceMotionEvent === 'undefined') { pad.innerHTML = '<div>This phone has no motion sensor.</div>'; return; }
+    pad.addEventListener('pointerdown', start);
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach((ev) => pad.addEventListener(ev, end));
+    airCleanup?.();
+    window.addEventListener('devicemotion', onMotion);
+    airCleanup = () => { window.removeEventListener('devicemotion', onMotion); airCleanup = null; };
+    $('#airBack', el).onclick = () => sendKey('back');
+    $('#airHome', el).onclick = () => sendKey('home');
+  });
+}
+
+// ------------------------------------------------------------ More sheet
+const MORE_ICONS = {
+  open: '<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>',
+  sleep: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/>',
+  scenes: '<rect x="3" y="8" width="18" height="13" rx="2"/><path d="M3 8l3-5h4l-3 5M10 8l3-5h4l-3 5"/>',
+  air: '<rect x="7" y="2" width="10" height="20" rx="5"/><path d="M12 6v4"/>',
+  input: '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/>',
+  keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
+  numbers: '<path d="M4 9h16M4 15h16M10 3L8 21M16 3l-2 18"/>',
+  simple: '<rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="12" cy="12" r="4"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
+};
+function moreSheet() {
+  const items = [['open', 'Open on the TV'], ['sleep', 'Sleep timer'], ['scenes', 'Scenes'], ['air', 'Air Mouse'], ['input', 'Input'],
+    ['keyboard', 'Keyboard'], ['numbers', 'Numbers'], ['simple', 'Simple mode'], ['settings', 'TV settings']];
+  const on = (k) => (k === 'simple' && settings.simple) || (k === 'sleep' && sleep.end);
+  openSheet(`<h2>More</h2><div class="more-grid">${items.map(([k, n]) => `<button data-more="${k}" class="${on(k) ? 'on' : ''}"><svg viewBox="0 0 24 24">${MORE_ICONS[k]}</svg>${n}</button>`).join('')}</div>`, (el) => {
+    $$('[data-more]', el).forEach((b) => b.onclick = () => {
+      const k = b.dataset.more;
+      if (k === 'open') return openLinkSheet();
+      if (k === 'sleep') return sleepSheet();
+      if (k === 'scenes') return scenesSheet();
+      if (k === 'air') return airMouseSheet();
+      if (k === 'keyboard') return (dev() ? keyboardSheet() : deviceSheet());
+      if (k === 'numbers') return $('#btnNumpad').click();
+      if (k === 'simple') {
+        settings.simple = !settings.simple;
+        saveSettings(); applySettings(); closeSheet();
+        return toast(settings.simple ? 'Simple mode on' : 'Simple mode off');
+      }
+      closeSheet();
+      sendKey(k === 'input' ? 'input' : 'settings');
+    });
+  });
+}
+$('#btnMore').onclick = moreSheet;
+
 // --------------------------------------------------------------- settings
 function renderDeviceList() {
   const el = $('#deviceList');
@@ -496,6 +790,7 @@ document.addEventListener('visibilitychange', applyAwake);
 function applySettings() {
   document.body.classList.toggle('smooth', settings.smooth);
   $('#theaterDim').classList.toggle('hidden', !settings.theater);
+  $('#setSimple').checked = !!settings.simple;
   $('#setHaptic').checked = settings.haptic;
   $('#setSmooth').checked = settings.smooth;
   $('#setAwake').checked = settings.awake;
@@ -511,6 +806,7 @@ const bind = (id, key, fn) => $(id).addEventListener('change', (e) => {
   settings[key] = e.target.type === 'checkbox' ? e.target.checked : e.target.type === 'range' ? Number(e.target.value) : e.target.value;
   saveSettings(); applySettings(); fn?.();
 });
+bind('#setSimple', 'simple');
 bind('#setHaptic', 'haptic');
 bind('#setSmooth', 'smooth');
 bind('#setAwake', 'awake');
@@ -555,6 +851,8 @@ function loadScript(src) {
   applySettings();
   loadShortcuts();
   connectWs();
+  runSleep();
+  window.NativeBackend?.onShared?.(handleShared);
   if (!NATIVE && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   try {
     state.info = await api('/info');

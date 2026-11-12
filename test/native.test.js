@@ -169,9 +169,13 @@ test('APK backend pairs with and controls an Android TV (Remote v2)', async (t) 
   await be.request('POST', `/devices/${dev.id}/key`, { key: 'vol_up' });
   await be.request('POST', `/devices/${dev.id}/key`, { key: 'ok' });
   await be.request('POST', `/devices/${dev.id}/launch`, { id: 'YouTube' });
-  await until(() => tv.keys.length === 2 && tv.links.length === 1);
+  // "Open on the TV": YouTube links open the video, other links open as app links.
+  assert.equal((await be.request('POST', `/devices/${dev.id}/open`, { url: 'https://youtu.be/dQw4w9WgXcQ' })).via, 'youtube');
+  assert.equal((await be.request('POST', `/devices/${dev.id}/open`, { url: 'https://example.com/page' })).via, 'browser');
+  await assert.rejects(be.request('POST', `/devices/${dev.id}/open`, { url: 'ftp://x' }), /https/);
+  await until(() => tv.keys.length === 2 && tv.links.length === 3);
   assert.deepEqual(tv.keys, [KeyEnum.KEYCODE_VOLUME_UP, KeyEnum.KEYCODE_DPAD_CENTER]);
-  assert.deepEqual(tv.links, ['https://www.youtube.com']);
+  assert.deepEqual(tv.links, ['https://www.youtube.com', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'https://example.com/page']);
 
   const list = await be.request('GET', '/devices');
   assert.equal(list[0].paired, true, 'pairing persisted');
@@ -212,6 +216,9 @@ test('APK backend drives Sony BRAVIA over HTTP and rejects LG/Samsung', async (t
   assert.equal(ircc.psk, '4321');
   await be.request('POST', `/devices/${dev.id}/text`, { text: 'hi' });
   assert.ok(seen.some((s) => s.url === '/sony/appControl' && /setTextForm/.test(s.body)));
+  await be.request('POST', `/devices/${dev.id}/open`, { url: 'https://example.com/a?b=1' });
+  const opened = seen.find((s) => s.url === '/sony/appControl' && /setActiveApp/.test(s.body));
+  assert.equal(JSON.parse(opened.body).params[0].uri, 'localapp://webappruntime?url=https%3A%2F%2Fexample.com%2Fa%3Fb%3D1');
   await be.request('DELETE', `/devices/${dev.id}`);
 });
 

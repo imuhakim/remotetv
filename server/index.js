@@ -258,6 +258,29 @@ app.post('/api/devices/:id/cast/youtube', wrap(async (req) => {
   throw httpError(400, 'No way to reach YouTube on this TV (scan to find its DIAL service)');
 }));
 
+// "Open on the TV": YouTube links go to the YouTube app, media files to the
+// DLNA player, anything else to the TV's browser / app links.
+const MEDIA_MIME = { mp4: 'video/mp4', mkv: 'video/x-matroska', webm: 'video/webm', mov: 'video/quicktime', m3u8: 'application/vnd.apple.mpegurl',
+  mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png' };
+app.post('/api/devices/:id/open', wrap(async (req) => {
+  const url = String(req.body.url || '').trim();
+  if (!/^https?:\/\//i.test(url)) throw httpError(400, 'Paste a link that starts with http:// or https://');
+  const d = store.get(req.params.id);
+  if (!d) throw httpError(404, 'Unknown device');
+  let yt = null;
+  if (/youtu.?be/i.test(url)) try { yt = cast.youtubeId(url); } catch { /* not a video link */ }
+  if (yt) {
+    const s = sessions.get(d.id);
+    if (s?.driver.castYouTube) { await s.driver.castYouTube(yt); return { via: 'youtube' }; }
+    if (d.dialUrl) { await cast.dialYouTube(d.dialUrl, yt); return { via: 'youtube' }; }
+  }
+  const mime = MEDIA_MIME[url.split(/[?#]/)[0].split('.').pop().toLowerCase()];
+  if (mime && d.dlna) { await cast.play(d.dlna, url, mime, url.split('/').pop()); return { via: 'dlna' }; }
+  const { driver } = await session(d.id);
+  if (driver.openUrl) { await driver.openUrl(url); return { via: 'browser' }; }
+  throw httpError(501, 'This TV cannot open links over this connection');
+}));
+
 app.post('/api/devices/:id/cast/control', wrap(async (req) => {
   const d = dlnaOf(req.params.id);
   await cast.control(d.dlna, req.body.action, req.body.value);

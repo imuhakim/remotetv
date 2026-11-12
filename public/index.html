@@ -23,10 +23,18 @@
         <span id="deviceName">Tap to connect your TV</span>
         <svg viewBox="0 0 24 24" class="chev"><path d="M6 9l6 6 6-6"/></svg>
       </button>
+      <button class="round" id="btnMore" aria-label="More: open link, sleep timer, scenes, air mouse">
+        <svg viewBox="0 0 24 24"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3.2"/></svg>
+      </button>
       <button class="round danger" data-key="power" aria-label="Power">
         <svg viewBox="0 0 24 24"><path d="M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>
       </button>
     </header>
+
+    <div class="status-strip hidden" id="statusStrip">
+      <span id="nowOpen" class="hidden">Now open <b id="nowApp"></b></span>
+      <button id="sleepChip" class="chip hidden" aria-label="Sleep timer"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/></svg><span id="sleepLeft"></span></button>
+    </div>
 
     <div class="apps" id="shortcuts"></div>
 
@@ -133,6 +141,7 @@
 
     <h3>Remote behavior</h3>
     <div class="card list">
+      <label class="item"><div><b>Simple mode</b><small>Big buttons only — easy for parents and kids</small></div><input type="checkbox" class="switch" id="setSimple"></label>
       <label class="item"><div><b>Haptic feedback</b><small>Vibrate on button press</small></div><input type="checkbox" class="switch" id="setHaptic"></label>
       <label class="item"><div><b>Smooth press</b><small>Scale animation when pressing</small></div><input type="checkbox" class="switch" id="setSmooth"></label>
       <label class="item"><div><b>Keep screen awake</b><small>Needs the HTTPS address</small></div><input type="checkbox" class="switch" id="setAwake"></label>
