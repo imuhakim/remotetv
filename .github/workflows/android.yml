@@ -88,7 +88,7 @@ jobs:
           gradle() {
             set -o pipefail
             ./gradlew --no-daemon "$@" 2>&1 | tee -a "$RUNNER_TEMP/gradle.log" || {
-              grep -E "error:|e: |FAILURE|What went wrong|^> |AAPT|Execution failed" "$RUNNER_TEMP/gradle.log" | head -n 25 | while IFS= read -r l; do echo "::error::$l"; done
+              { grep -A12 -E "What went wrong" "$RUNNER_TEMP/gradle.log" | grep -vE "^\* Try|^> Run with|^> Get more|^$" | head -n 9; grep -E "\.java:[0-9]+: error:|\.xml:[0-9]+: (AAPT: )?error|ERROR:" "$RUNNER_TEMP/gradle.log" | head -n 9; } | while IFS= read -r l; do echo "::error::$l"; done
               return 1
             }
           }
