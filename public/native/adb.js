@@ -201,7 +201,9 @@
   };
   const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
   const PKG = /^[\w.]+$/;
-  const HELPER_PKG = 'io.github.imuhakim.remotetv.tv';
+  const HELPER_PKG = 'io.github.imuhakim.remotetv'; // the same app runs on the TV as the drawing receiver
+  const HELPER_SVC = `${HELPER_PKG}/io.github.imuhakim.remotetv.tv.HelperService`;
+  const OLD_HELPER = 'io.github.imuhakim.remotetv.tv'; // separate helper app of v1.1.12
 
   const features = {
     async screenshot(adb) {
@@ -251,13 +253,14 @@
         topApp: get(/ ([\w.]+)\/[\w.$]+/),
       };
     },
-    // Installs the RemoteTV TV Helper, allows it to draw over other apps and starts it.
+    // Installs RemoteTV on the TV, allows it to draw over other apps and starts the receiver.
     async installHelper(adb, apk) {
+      await adb.sh(`pm uninstall ${OLD_HELPER} 2>/dev/null`).catch(() => {}); // it would hold port 7333
       let out = dec.decode(await adb.push(`exec:cmd package install -r -S ${apk.length}`, apk)).trim();
       if (!/Success/.test(out)) out = dec.decode(await adb.push(`exec:pm install -r -S ${apk.length}`, apk)).trim();
       if (!/Success/.test(out)) throw new Error(`The TV refused the install: ${out.slice(0, 160) || 'no answer'}`);
       await adb.sh(`appops set ${HELPER_PKG} SYSTEM_ALERT_WINDOW allow`);
-      const started = await adb.sh(`am start-foreground-service -n ${HELPER_PKG}/.HelperService 2>&1 || am startservice -n ${HELPER_PKG}/.HelperService 2>&1`);
+      const started = await adb.sh(`am start-foreground-service -n ${HELPER_SVC} 2>&1 || am startservice -n ${HELPER_SVC} 2>&1`);
       return { installed: true, started: !/Error|not found/i.test(started) };
     },
     async helperState(adb) {

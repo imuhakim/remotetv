@@ -866,7 +866,7 @@ async function tvHealthSheet() {
 }
 
 // ------------------------------------------------------------ draw on TV
-// Needs the small "RemoteTV Helper" app on the TV (android/tvhelper). Strokes
+// Needs RemoteTV itself installed on the TV (the same APK acts as receiver). Strokes
 // are sent live as 0..1 coordinates and drawn above whatever the TV shows.
 const DRAW_COLORS = ['#ff3b30', '#ffcc00', '#34c759', '#0a84ff', '#ffffff', '#000000'];
 const draw = { color: DRAW_COLORS[0], size: 0.006, id: 1, queue: Promise.resolve(), pendingText: null };
@@ -879,7 +879,7 @@ function drawSend(ops) {
 async function drawOnTv() {
   if (!state.info?.draw) return toast('Draw on TV needs the RemoteTV Android app', true);
   if (!dev() || /^infra-red/.test(dev().host || '')) return dev() ? toast('Draw on TV needs a TV added over Wi-Fi', true) : deviceSheet();
-  openSheet('<h2>Draw on TV</h2><p class="sub">Connecting to RemoteTV Helper on the TV…</p>');
+  openSheet('<h2>Draw on TV</h2><p class="sub">Connecting to RemoteTV on the TV…</p>');
   try {
     const r = await devApi('/draw/connect', {});
     if (r.paired) drawCanvasSheet(r);
@@ -907,15 +907,15 @@ function drawPairSheet(size) {
 
 function helperInstallSheet(reason) {
   const viaAdb = adbOk();
-  openSheet(`<h2>Install RemoteTV Helper</h2>
-    <p class="sub">${esc(reason || 'Drawing on the TV needs a small helper app on the TV (one time).')}</p>
-    ${viaAdb ? `<div class="card"><b>Easiest: install from this phone</b><small class="sub" style="display:block;margin-top:4px">Uses Advanced mode (ADB). It also allows the helper to draw over other apps.</small>
+  openSheet(`<h2>Install RemoteTV on the TV</h2>
+    <p class="sub">${esc(reason || 'Drawing on the TV needs this same RemoteTV app installed on the TV too (one time). On the TV it becomes the drawing receiver.')}</p>
+    ${viaAdb ? `<div class="card"><b>Easiest: install from this phone</b><small class="sub" style="display:block;margin-top:4px">Copies this app to the TV over Advanced mode (ADB) and allows it to draw over other apps.</small>
       <div class="row gap"><button class="btn" id="hAdb">${dev().adb ? 'Install on the TV now' : 'Set up Advanced mode, then install'}</button></div><p class="sub" id="hMsg"></p></div>` : ''}
     <div class="card" style="margin-top:10px"><b>Or install on the TV by hand</b>
       <ol style="margin:8px 0 0;padding-left:20px;line-height:1.6">
         <li>On the TV install <b>Downloader</b> from the Play Store.</li>
-        <li>In Downloader open <b>github.com/imuhakim/remotetv/releases/latest</b> and install <b>RemoteTV-TVHelper-…apk</b>.</li>
-        <li>Open <b>RemoteTV Helper</b> on the TV and choose <b>Allow drawing over other apps</b>.</li>
+        <li>In Downloader open <b>github.com/imuhakim/remotetv/releases/latest</b> and install <b>RemoteTV-v…apk</b> (the same file as on your phone).</li>
+        <li>Open <b>RemoteTV</b> on the TV and choose <b>Allow drawing over other apps</b>.</li>
       </ol></div>
     <div class="row gap"><button class="btn ghost" id="hRetry">Try again</button></div>`, (el) => {
     $('#hRetry', el).onclick = drawOnTv;
@@ -924,9 +924,9 @@ function helperInstallSheet(reason) {
     const install = async () => {
       const msg = $('#hMsg');
       try {
-        if (msg) msg.textContent = 'Installing on the TV… (about 10 seconds)';
+        if (msg) msg.textContent = 'Copying RemoteTV to the TV… (about 30 seconds)';
         const r = await devApi('/adb/install-helper', {});
-        toast(r.started ? 'Helper installed ✓' : 'Installed. Open RemoteTV Helper once on the TV.');
+        toast(r.started ? 'Installed on the TV ✓' : 'Installed. Open RemoteTV once on the TV.');
         setTimeout(drawOnTv, 1500);
       } catch (e) { if (msg) msg.textContent = e.message; else toast(e.message, true); }
     };

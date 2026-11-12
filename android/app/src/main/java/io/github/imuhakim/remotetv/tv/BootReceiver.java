@@ -4,10 +4,10 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 
-/** Starts the helper again after the TV restarts or the app is updated. */
+/** On a TV, starts the drawing receiver again after a restart or an app update (never on phones). */
 public class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context c, Intent i) {
-        try { HelperService.start(c); } catch (Exception ignored) { }
+        try { if (HelperService.isTv(c)) HelperService.start(c); } catch (Exception ignored) { }
     }
 }

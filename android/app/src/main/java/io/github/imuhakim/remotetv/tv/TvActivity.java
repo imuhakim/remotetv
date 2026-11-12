@@ -18,8 +18,8 @@ import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.Collections;
 
-/** Status screen on the TV: starts the helper and shows what is still needed. */
-public class MainActivity extends Activity {
+/** Shown when RemoteTV is opened on a TV: starts the drawing receiver and shows what is still needed. */
+public class TvActivity extends Activity {
     private TextView status;
 
     @Override
@@ -34,7 +34,7 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(Color.rgb(13, 11, 20));
 
         TextView title = new TextView(this);
-        title.setText("RemoteTV Helper");
+        title.setText("RemoteTV on this TV");
         title.setTextColor(Color.WHITE);
         title.setTextSize(34);
         title.setGravity(Gravity.CENTER);
@@ -77,7 +77,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("Running").append(ip != null ? " at " + ip + ":" + HelperService.PORT : "").append("\n\n");
         if (ok) sb.append("✓ Ready. On your phone open RemoteTV › More › Draw on TV.");
-        else sb.append("✗ Drawing over other apps is not allowed yet.\nChoose the button below, or on your phone use RemoteTV › Advanced (ADB) › Install TV helper, which allows it automatically.");
+        else sb.append("✗ Drawing over other apps is not allowed yet.\nChoose the button below, or on your phone use RemoteTV › More › Draw on TV › Install on the TV, which allows it automatically.");
         if (extra != null) sb.append("\n\n").append(extra);
         status.setText(sb.toString());
     }
@@ -87,7 +87,7 @@ public class MainActivity extends Activity {
         try {
             startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
         } catch (Exception e) {
-            refresh("This TV has no settings screen for it. Use the phone: RemoteTV › Advanced (ADB) › Install TV helper.");
+            refresh("This TV has no settings screen for it. Use the phone: RemoteTV › More › Draw on TV › Install on the TV (Advanced mode).");
         }
     }
 

@@ -122,7 +122,7 @@ function mockPlugin() {
     }),
     tlsWrite: async ({ id, data }) => { conns.get(id).write(Buffer.from(data, 'base64')); },
     tlsClose: async ({ id }) => { conns.get(id)?.destroy(); },
-    readAsset: async ({ path: p }) => { if (p !== 'tvhelper.apk') throw new Error('missing'); return { data: FAKE_APK.toString('base64') }; },
+    readSelfApk: async () => ({ data: FAKE_APK.toString('base64') }),
     ssdpSearch: async () => ({ responses: [] }),
     mdnsDiscover: async () => ({ services: [] }),
     keepAwake: async () => {},
@@ -456,7 +456,7 @@ test('APK shop TV: a temporary TV is forgotten after 30 days without use', async
   } finally { Date.now = realNow; }
 });
 
-test('APK installs the TV Helper over ADB in many chunks and allows it to draw', async (t) => {
+test('APK installs itself on the TV over ADB in many chunks and allows it to draw', async (t) => {
   const tv = fakeAdbTv();
   const port = await listen(tv.server);
   t.after(() => tv.server.close());
@@ -467,8 +467,9 @@ test('APK installs the TV Helper over ADB in many chunks and allows it to draw',
   const r = await be.request('POST', `/devices/${dev.id}/adb/install-helper`, {});
   assert.equal(r.installed, true);
   assert.ok(tv.installed && tv.installed.equals(FAKE_APK), 'TV received the exact APK bytes (40 KB in 4 KB packets)');
-  assert.ok(tv.commands.includes('exec:appops set io.github.imuhakim.remotetv.tv SYSTEM_ALERT_WINDOW allow'));
-  assert.ok(tv.commands.some((c) => c.includes('am start-foreground-service -n io.github.imuhakim.remotetv.tv/.HelperService')));
+  assert.ok(tv.commands.includes('exec:pm uninstall io.github.imuhakim.remotetv.tv 2>/dev/null'), 'old separate helper removed');
+  assert.ok(tv.commands.includes('exec:appops set io.github.imuhakim.remotetv SYSTEM_ALERT_WINDOW allow'));
+  assert.ok(tv.commands.some((c) => c.includes('am start-foreground-service -n io.github.imuhakim.remotetv/io.github.imuhakim.remotetv.tv.HelperService')));
   await be.request('DELETE', `/devices/${dev.id}`);
 });
 

@@ -1,5 +1,5 @@
 'use strict';
-/* Link to the RemoteTV TV Helper app (android/tvhelper) on TCP 7333: one JSON
+/* Link to RemoteTV running on the TV (android/app/.../tv/HelperService) on TCP 7333: one JSON
  * object per line. Requests carry "rid" and get a reply with the same rid;
  * drawing operations are fire-and-forget so strokes stay fast. */
 (function () {
@@ -8,7 +8,7 @@
   const PORT = 7333;
   const enc = new TextEncoder();
 
-  const NOT_RUNNING = 'The RemoteTV Helper is not running on this TV. Install it first (More › Draw on TV shows how).';
+  const NOT_RUNNING = 'RemoteTV is not running on this TV yet. Install it on the TV first (More › Draw on TV shows how).';
 
   class HelperLink {
     constructor(host, port = PORT) {

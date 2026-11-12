@@ -103,7 +103,7 @@
     if (!r.paired && d.helperToken) { delete d.helperToken; save(); } // the TV forgot this phone
     return h;
   }
-  const OVERLAY_OFF = 'The RemoteTV Helper on the TV is not allowed to draw over other apps yet. On the TV open RemoteTV Helper › "Allow drawing over other apps", or use Advanced (ADB) › Install TV helper, which allows it automatically.';
+  const OVERLAY_OFF = 'RemoteTV on the TV is not allowed to draw over other apps yet. On the TV open RemoteTV › "Allow drawing over other apps", or tap "Install on the TV" here (Advanced mode), which allows it automatically.';
 
   function mediaMime(url) {
     const ext = url.split(/[?#]/)[0].split('.').pop().toLowerCase();
@@ -321,14 +321,14 @@
     ['POST', /^\/devices\/(\w+)\/adb\/install-helper$/, async (b, m) => {
       const a = await adbFor(m[1]);
       let asset;
-      try { asset = await RemoteTv.readAsset({ path: 'tvhelper.apk' }); } catch { throw err(501, 'The TV helper is not bundled in this build of the app'); }
+      try { asset = await RemoteTv.readSelfApk(); } catch (e) { throw err(501, e.message || 'Cannot read the app file'); }
       const bin = atob(asset.data);
       const apk = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) apk[i] = bin.charCodeAt(i);
       return A().installHelper(a, apk);
     }],
 
-    // Draw on TV (needs the RemoteTV Helper app on the TV)
+    // Draw on TV (needs RemoteTV itself installed on the TV)
     ['POST', /^\/devices\/(\w+)\/draw\/connect$/, async (b, m) => {
       const h = await helperFor(m[1], { fresh: true });
       if (!h.overlay) throw err(409, OVERLAY_OFF);

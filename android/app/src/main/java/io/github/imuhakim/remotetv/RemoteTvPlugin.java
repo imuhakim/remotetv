@@ -435,13 +435,11 @@ public class RemoteTvPlugin extends Plugin {
     }
 
     // ------------------------------------------------------- bundled files
-    /** Reads a file packaged in the app's assets (e.g. "tvhelper.apk") as base64. */
+    /** This app's own APK as base64, so the phone can install the same app on the TV over ADB. */
     @PluginMethod
-    public void readAsset(PluginCall call) {
-        final String path = call.getString("path", "");
-        if (path.contains("..")) { call.reject("Bad path"); return; }
+    public void readSelfApk(PluginCall call) {
         new Thread(() -> {
-            try (InputStream in = getContext().getAssets().open(path)) {
+            try (InputStream in = new java.io.FileInputStream(getContext().getPackageCodePath())) {
                 java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
                 byte[] buf = new byte[65536];
                 int n;
@@ -450,7 +448,7 @@ public class RemoteTvPlugin extends Plugin {
                 r.put("data", Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP));
                 call.resolve(r);
             } catch (Exception e) {
-                call.reject("Not bundled in this build: " + path);
+                call.reject("Cannot read the app file: " + e.getMessage());
             }
         }).start();
     }

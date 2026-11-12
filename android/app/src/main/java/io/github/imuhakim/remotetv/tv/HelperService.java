@@ -18,6 +18,8 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.view.WindowManager;
 
+import io.github.imuhakim.remotetv.R;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -59,6 +61,11 @@ public class HelperService extends Service {
     private int pendingTries;
     private final Runnable hideCard = () -> { if (overlay != null) { overlay.card(null, null); detachIfEmpty(); } };
 
+    /** True on Android TV / Google TV: only there does the app act as the drawing receiver. */
+    public static boolean isTv(Context c) {
+        return c.getPackageManager().hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK);
+    }
+
     public static void start(Context c) {
         Intent i = new Intent(c, HelperService.class);
         if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i); else c.startService(i);
@@ -97,12 +104,12 @@ public class HelperService extends Service {
         Notification.Builder b;
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-            nm.createNotificationChannel(new NotificationChannel(CHANNEL, "RemoteTV Helper", NotificationManager.IMPORTANCE_MIN));
+            nm.createNotificationChannel(new NotificationChannel(CHANNEL, "RemoteTV on TV", NotificationManager.IMPORTANCE_MIN));
             b = new Notification.Builder(this, CHANNEL);
         } else {
             b = new Notification.Builder(this);
         }
-        Notification n = b.setContentTitle("RemoteTV Helper")
+        Notification n = b.setContentTitle("RemoteTV")
                 .setContentText("Ready for drawing from your phone")
                 .setSmallIcon(R.drawable.ic_helper)
                 .build();
@@ -113,7 +120,7 @@ public class HelperService extends Service {
         try {
             nsd = (NsdManager) getSystemService(NSD_SERVICE);
             NsdServiceInfo info = new NsdServiceInfo();
-            info.setServiceName("RemoteTV Helper " + Build.MODEL);
+            info.setServiceName("RemoteTV " + Build.MODEL);
             info.setServiceType("_remotetvhelper._tcp");
             info.setPort(PORT);
             nsdListener = new NsdManager.RegistrationListener() {
@@ -161,7 +168,7 @@ public class HelperService extends Service {
                 JSONObject r = new JSONObject();
                 r.put("rid", m.optInt("rid", 0));
                 if (t.equals("hello")) {
-                    r.put("ok", true).put("app", "RemoteTV Helper").put("v", 1).put("overlay", canDraw(this));
+                    r.put("ok", true).put("app", "RemoteTV").put("v", 1).put("overlay", canDraw(this));
                     Point size = screenSize();
                     r.put("w", size.x).put("h", size.y);
                     String token = m.optString("token", "");
