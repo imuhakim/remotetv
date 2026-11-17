@@ -71,6 +71,7 @@ function openSheet(html, onMount) {
   onMount?.($('#sheetBody'));
 }
 function closeSheet() {
+  stopArrowTyping();
   airCleanup?.();
   stopScreen();
   $('#sheet').classList.remove('open');
@@ -403,9 +404,14 @@ $('#btnApps').onclick = async () => {
 };
 
 // ------------------------------------------------------- keyboard / voice
+const isIr = () => /^infra-red/.test(dev()?.host || '');
+
 function keyboardSheet(prefill = '') {
-  openSheet(`<h2>Type on TV</h2><p class="sub">Focus a search box on the TV, then send text.</p>
-    <div class="row gap"><input id="kText" value="${esc(prefill)}" placeholder="Search…" autocomplete="off"><button class="btn" id="kSend">Send</button></div>
+  const ir = isIr();
+  openSheet(`<h2>Type on TV</h2>
+    <p class="sub">${ir ? 'Infra-red has no letter keys, so RemoteTV presses the arrows and OK on the TV’s YouTube keyboard for you.' : 'Focus a search box on the TV, then send text.'}</p>
+    <div class="row gap"><input id="kText" value="${esc(prefill)}" placeholder="Search…" autocomplete="off">${ir ? '' : '<button class="btn" id="kSend">Send</button>'}</div>
+    <div class="row gap"><button class="btn ${ir ? '' : 'ghost'}" id="kArrows">Type with arrows (YouTube keyboard)</button></div>
     <div class="row gap"><button class="btn ghost" id="kOk">Enter / OK</button><button class="btn ghost" id="kBack">Back</button></div>`, (el) => {
     const input = $('#kText', el);
     setTimeout(() => input.focus(), 250);
@@ -414,12 +420,60 @@ function keyboardSheet(prefill = '') {
       try { await devApi('/text', { text: input.value }); toast('Sent'); input.value = ''; }
       catch (e) { toast(e.message, true); }
     };
-    $('#kSend', el).onclick = send;
-    input.onkeydown = (e) => { if (e.key === 'Enter') send(); };
+    if ($('#kSend', el)) $('#kSend', el).onclick = send;
+    input.onkeydown = (e) => { if (e.key === 'Enter') (ir ? arrowTypeSheet(input.value) : send()); };
+    $('#kArrows', el).onclick = () => arrowTypeSheet(input.value);
     $('#kOk', el).onclick = () => sendKey('ok');
     $('#kBack', el).onclick = () => sendKey('back');
   });
 }
+
+// "Type with arrows": presses arrows + OK on YouTube's on-screen keyboard (keyboard-nav.js).
+let arrowRun = null;
+function arrowTypeSheet(text) {
+  const p = window.KeyboardNav.plan(text || '');
+  if (!p.typed) return toast('Type some letters first (a–z, space, - and \')', true);
+  openSheet(`<h2>Type with arrows</h2>
+    <p class="sub">Will type <b>“${esc(p.typed)}”</b> with ${p.keys.length} button presses${p.skipped ? ` (skipping ${esc(p.skipped)})` : ''}.</p>
+    <div class="card"><b>Before you start, on the TV:</b>
+      <ol style="margin:8px 0 0;padding-left:20px;line-height:1.6">
+        <li>Open <b>YouTube › Search</b> so its keyboard shows.</li>
+        <li>Move the highlight to the letter <b>A</b> (top left of the letters).</li>
+        <li>Keep the phone pointed at the TV until it finishes.</li>
+      </ol></div>
+    <div class="progress" id="aBar" style="margin-top:12px"><div></div></div>
+    <p class="sub" id="aMsg"></p>
+    <div class="row gap"><button class="btn" id="aGo">Start typing</button><button class="btn ghost hidden" id="aStop">Stop</button></div>`, (el) => {
+    const bar = $('#aBar div', el);
+    const msg = $('#aMsg', el);
+    $('#aGo', el).onclick = async () => {
+      $('#aGo', el).classList.add('hidden');
+      $('#aStop', el).classList.remove('hidden');
+      const run = { stop: false };
+      arrowRun = run;
+      const gap = isIr() ? 230 : 140; // ms between presses: infra-red TVs need a little longer
+      let letters = 0;
+      const total = p.keys.filter((k) => k === 'ok').length;
+      try {
+        for (let i = 0; i < p.keys.length && !run.stop; i++) {
+          await devApi('/key', { key: p.keys[i] });
+          if (p.keys[i] === 'ok') letters++;
+          bar.style.width = `${((i + 1) / p.keys.length) * 100}%`;
+          msg.textContent = `Typing… ${letters} of ${total}`;
+          await new Promise((r) => setTimeout(r, gap));
+        }
+        msg.textContent = run.stop ? 'Stopped.' : 'Done. If a letter is wrong, use Back/⌫ on the TV and try again from A.';
+      } catch (e) { msg.textContent = e.message; }
+      arrowRun = null;
+      $('#aStop', el).classList.add('hidden');
+      $('#aGo', el).classList.remove('hidden');
+      $('#aGo', el).textContent = 'Type again';
+    };
+    $('#aStop', el).onclick = () => { stopArrowTyping(); };
+  });
+}
+function stopArrowTyping() { if (arrowRun) arrowRun.stop = true; }
+
 $('#btnKeyboard').onclick = () => (dev() ? keyboardSheet() : deviceSheet());
 
 $('#btnVoice').onclick = () => {

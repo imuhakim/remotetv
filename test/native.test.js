@@ -663,3 +663,28 @@ test('APK infra-red catalogue: 100+ brands, code sets per brand, test without sa
   await be.request('POST', `/devices/${d.id}/connect`, {});
   await be.request('POST', `/devices/${d.id}/key`, { key: 'power' });
 });
+
+test('Type with arrows: the arrow path types the text on YouTube\'s on-screen keyboard', () => {
+  const ctx = { window: {} };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'public/keyboard-nav.js'), 'utf8'), ctx);
+  const { plan, ROWS } = ctx.window.KeyboardNav;
+  // Model of the keyboard: 4 letter rows, then SPACE under V/W; Up from SPACE lands on V.
+  const run = (keys) => {
+    let r = 0, c = 0, out = '';
+    for (const k of keys) {
+      if (k === 'ok') out += r === 4 ? ' ' : ROWS[r][c];
+      else if (k === 'up') { if (r === 4) { r = 3; c = 0; } else r = Math.max(0, r - 1); }
+      else if (k === 'down') { if (r === 3) { assert.equal(c, 0, 'enters SPACE from V'); r = 4; } else r += 1; }
+      else if (k === 'left') { assert.ok(c > 0 && r < 4, 'never leaves the keyboard on the left'); c -= 1; }
+      else if (k === 'right') { assert.ok(c < 6 && r < 4); c += 1; }
+    }
+    return out;
+  };
+  for (const text of ['upin ipin', 'Nasi  Lemak', "rock-n-roll's", 'zzz aaa', 'Café Ölé']) {
+    const p = plan(text);
+    assert.equal(run(p.keys), p.typed, text);
+  }
+  assert.equal(plan('Café Ölé').typed, 'cafe ole', 'accents are dropped');
+  assert.equal(plan('abc 123!').skipped, '123!', 'digits and symbols are reported, not typed');
+  assert.equal(plan('  hi  ').typed, 'hi');
+});
