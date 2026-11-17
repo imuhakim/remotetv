@@ -233,7 +233,7 @@
     ['POST', /^\/devices\/(\w+)\/key$/, async (b, m) => { const { driver } = await session(m[1]); await driver.sendKey(String(b.key), b.mode); }],
     ['POST', /^\/devices\/(\w+)\/text$/, async (b, m) => {
       const { driver } = await session(m[1]);
-      if (!driver.sendText) throw err(501, 'Typing is not supported over this protocol. On Sony, add the TV as "Sony BRAVIA (IP control)".');
+      if (!driver.sendText) throw err(501, 'Typing needs a Wi-Fi connection to the TV (Android TV, Sony BRAVIA or Roku). Infra-red can only press buttons.');
       await driver.sendText(String(b.text || ''));
     }],
     ['POST', /^\/devices\/(\w+)\/volume$/, async (b, m) => {

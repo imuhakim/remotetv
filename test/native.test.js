@@ -193,6 +193,14 @@ test('APK backend pairs with and controls an Android TV (Remote v2)', async (t) 
   assert.deepEqual(tv.keys, [KeyEnum.KEYCODE_VOLUME_UP, KeyEnum.KEYCODE_DPAD_CENTER]);
   assert.deepEqual(tv.links, ['https://www.youtube.com', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'https://example.com/page']);
 
+  // Typing (e.g. YouTube search) is sent as keyboard key presses.
+  tv.keys.length = 0;
+  await be.request('POST', `/devices/${dev.id}/text`, { text: 'Upin ipin 2!' });
+  const K = (n) => KeyEnum[`KEYCODE_${n}`];
+  await until(() => tv.keys.length === 11); // the fake TV reads the socket asynchronously
+  assert.deepEqual(tv.keys, ['U', 'P', 'I', 'N', 'SPACE', 'I', 'P', 'I', 'N', 'SPACE', '2'].map(K), '"!" has no key and is skipped');
+  await assert.rejects(be.request('POST', `/devices/${dev.id}/text`, { text: '!!' }), /Nothing to type/);
+
   const list = await be.request('GET', '/devices');
   assert.equal(list[0].paired, true, 'pairing persisted');
 

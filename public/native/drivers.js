@@ -377,6 +377,27 @@
       await this.remote.send({ remoteKeyInject: { keyCode: code, direction } });
     }
 
+    // Types text as keyboard key presses. Works in YouTube's own search
+    // keyboard and in the system keyboard, like a USB keyboard on the TV.
+    // Letters are sent lower case; characters with no key are skipped.
+    async sendText(text) {
+      const { Key, Dir } = protos();
+      const named = { ' ': 'SPACE', '.': 'PERIOD', ',': 'COMMA', '-': 'MINUS', '=': 'EQUALS', "'": 'APOSTROPHE', '/': 'SLASH', '@': 'AT', '+': 'PLUS', '\n': 'ENTER' };
+      const codes = [];
+      for (const ch of String(text).normalize('NFD').replace(/[̀-ͯ]/g, '')) {
+        const c = ch.toLowerCase();
+        const name = /[a-z0-9]/.test(c) ? c.toUpperCase() : named[c];
+        const code = name && Key[`KEYCODE_${name}`];
+        if (code !== undefined) codes.push(code);
+      }
+      if (!codes.length) throw new Error('Nothing to type: use letters, numbers and spaces');
+      await this.ready();
+      for (const keyCode of codes) {
+        await this.remote.send({ remoteKeyInject: { keyCode, direction: Dir.SHORT } });
+        await new Promise((r) => setTimeout(r, 35)); // let the TV keep up
+      }
+    }
+
     async launchApp(id) {
       const link = ATV_LINKS[String(id).toLowerCase()] || id;
       if (!/:\/\//.test(link)) throw new Error(`Unknown app "${id}". Use a link such as https://www.youtube.com`);
