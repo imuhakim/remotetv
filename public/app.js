@@ -1062,7 +1062,7 @@ function drawCanvasSheet(size) {
     <div class="row gap draw-btns">
       ${dev().adb ? '<button class="btn ghost" id="dPic">TV picture</button>' : ''}<button class="btn danger" id="dHide">Remove from TV</button>
     </div>
-    <p class="sub" style="margin-top:6px">Your drawing appears on top of whatever the TV is showing.</p>`, (el) => {
+    <p class="sub" style="margin-top:6px">Your drawing appears on top of whatever the TV is showing.<br>From an iPad, iPhone or laptop on the same Wi-Fi: open <b>http://${esc(dev().host)}:7334</b> in the browser.</p>`, (el) => {
     const cv = $('#dCanvas', el);
     const ctx = cv.getContext('2d');
     const strokes = []; // local mirror for undo / redraw

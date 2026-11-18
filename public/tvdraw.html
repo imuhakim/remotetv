@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0d0b14">
+<title>Draw on TV</title>
+<!-- Served by RemoteTV on the TV (port 7334) so an iPad, iPhone or laptop can draw
+     on the TV from a browser. Talks to the same TV over /api/hello, /api/pair, /api/ops. -->
+<style>
+  :root { --bg: #0d0b14; --panel: #1a1726; --panel-2: #24202f; --line: rgba(255,255,255,.08); --text: #f3f1f8; --muted: #9a96a8; --accent: #7c5cff; --danger: #f43f5e; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; padding: max(12px, env(safe-area-inset-top)) 16px max(12px, env(safe-area-inset-bottom)); gap: 10px; overscroll-behavior: none; }
+  h1 { margin: 0; font-size: 20px; }
+  .sub { color: var(--muted); margin: 0; font-size: 14px; }
+  button, input, select { font: inherit; color: inherit; border: 0; }
+  button { cursor: pointer; }
+  .btn { padding: 11px 16px; border-radius: 12px; background: var(--accent); color: #fff; font-weight: 600; }
+  .btn.ghost { background: var(--panel-2); }
+  .btn.danger { background: rgba(244,63,94,.18); color: #ff8a9c; }
+  input { background: var(--panel-2); border-radius: 12px; padding: 11px 14px; min-width: 0; }
+  select { background: var(--panel-2); border-radius: 12px; padding: 10px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 16px; }
+  .hidden { display: none !important; }
+  #wrap { position: relative; width: 100%; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); background: #111;
+    background-image: repeating-linear-gradient(0deg, transparent 0 23px, rgba(255,255,255,.04) 23px 24px), repeating-linear-gradient(90deg, transparent 0 23px, rgba(255,255,255,.04) 23px 24px); }
+  #cv { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  .swatch { width: 34px; height: 34px; border-radius: 50%; background: var(--c); border: 2px solid rgba(255,255,255,.25); flex: none; }
+  .swatch.on { outline: 3px solid #9d85ff; outline-offset: 2px; }
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #2b2638; padding: 10px 16px; border-radius: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
+  #toast.show { opacity: 1; }
+  #toast.err { background: #5b1d2a; }
+  #code { font-size: 26px; letter-spacing: .3em; text-align: center; width: 200px; }
+</style>
+</head>
+<body>
+  <h1>Draw on TV</h1>
+
+  <section id="pair" class="card hidden">
+    <p class="sub">A 6-digit code is now on the TV screen. Type it here (only needed once on this device).</p>
+    <div class="row" style="margin-top:12px"><input id="code" inputmode="numeric" maxlength="7" autocomplete="one-time-code"><button class="btn" id="pairGo">Pair</button></div>
+  </section>
+
+  <section id="msg" class="card hidden"><p class="sub" id="msgText"></p><div class="row" style="margin-top:10px"><button class="btn ghost" id="retry">Try again</button></div></section>
+
+  <section id="draw" class="hidden" style="display:flex;flex-direction:column;gap:10px">
+    <div id="wrap"><canvas id="cv"></canvas></div>
+    <div class="row" id="swatches"></div>
+    <div class="row">
+      <select id="size" aria-label="Pen size"><option value="0.003">Thin</option><option value="0.006" selected>Medium</option><option value="0.012">Thick</option><option value="0.025">Marker</option></select>
+      <button class="btn ghost" id="undo">Undo</button><button class="btn ghost" id="clear">Clear</button>
+      <button class="btn ghost" id="text">Text</button><button class="btn ghost" id="message">Message</button>
+      <button class="btn danger" id="hide">Remove from TV</button>
+    </div>
+    <p class="sub">Your drawing appears on top of whatever the TV is showing. Apple Pencil works too.</p>
+  </section>
+  <div id="toast" role="status"></div>
+
+<script>
+'use strict';
+const $ = (s) => document.querySelector(s);
+const COLORS = ['#ff3b30', '#ffcc00', '#34c759', '#0a84ff', '#ffffff', '#000000'];
+const st = { color: COLORS[0], size: 0.006, id: 1, pendingText: null, queue: Promise.resolve(), token: '' };
+try { st.token = localStorage.getItem('rtv.draw.token') || ''; } catch { /* private mode */ }
+
+let toastT;
+function toast(text, err) {
+  const t = $('#toast');
+  t.textContent = text; t.classList.toggle('err', !!err); t.classList.add('show');
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), err ? 4000 : 1800);
+}
+async function api(name, body) {
+  const r = await fetch(`/api/${name}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, token: st.token }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.ok === false) throw new Error(j.error || `Error ${r.status}`);
+  return j;
+}
+function show(id) { for (const s of ['pair', 'msg', 'draw']) $(`#${s}`).classList.toggle('hidden', s !== id); }
+function fail(text) { $('#msgText').textContent = text; show('msg'); }
+
+async function start() {
+  try {
+    const name = /iPad/.test(navigator.userAgent) ? 'An iPad' : /iPhone/.test(navigator.userAgent) ? 'An iPhone' : 'A browser';
+    const r = await api('hello', { name });
+    if (!r.overlay) return fail('RemoteTV on the TV is not allowed to draw over other apps yet. On the TV open RemoteTV and choose “Allow drawing over other apps”.');
+    $('#wrap').style.aspectRatio = r.w && r.h ? `${r.w} / ${r.h}` : '16 / 9';
+    if (r.paired) { show('draw'); fit(); } else { show('pair'); setTimeout(() => $('#code').focus(), 200); }
+  } catch (e) { fail(`Cannot reach the TV: ${e.message}`); }
+}
+$('#retry').onclick = start;
+$('#pairGo').onclick = async () => {
+  try {
+    const r = await api('pair', { code: $('#code').value.replace(/\D/g, '') });
+    st.token = r.token;
+    try { localStorage.setItem('rtv.draw.token', r.token); } catch { /* ignore */ }
+    toast('Paired ✓'); show('draw'); fit();
+  } catch (e) { toast(e.message, true); }
+};
+$('#code').onkeydown = (e) => { if (e.key === 'Enter') $('#pairGo').click(); };
+
+// ---------------------------------------------------------------- drawing
+const cv = $('#cv');
+const ctx = cv.getContext('2d');
+const strokes = [];
+function send(ops) {
+  st.queue = st.queue.then(() => api('ops', { ops })).catch((e) => {
+    toast(e.message, true);
+    if (/Not paired/.test(e.message)) { st.token = ''; try { localStorage.removeItem('rtv.draw.token'); } catch { /* ignore */ } start(); }
+  });
+}
+function fit() {
+  const r = cv.getBoundingClientRect();
+  cv.width = Math.round(r.width * devicePixelRatio); cv.height = Math.round(r.height * devicePixelRatio);
+  redraw();
+}
+addEventListener('resize', () => { if (!$('#draw').classList.contains('hidden')) fit(); });
+function redraw() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  for (const s of strokes) {
+    if (s.text) { ctx.fillStyle = s.c; ctx.font = `bold ${s.s * cv.height}px sans-serif`; ctx.fillText(s.text, s.x * cv.width, s.y * cv.height); continue; }
+    ctx.strokeStyle = s.c; ctx.lineWidth = Math.max(1.5, s.w * cv.width); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    s.pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * cv.width, y * cv.height) : ctx.moveTo(x * cv.width, y * cv.height)));
+    if (s.pts.length === 1) ctx.lineTo(s.pts[0][0] * cv.width + 0.1, s.pts[0][1] * cv.height);
+    ctx.stroke();
+  }
+}
+const pos = (e) => {
+  const r = cv.getBoundingClientRect();
+  return [Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), Math.max(0, Math.min(1, (e.clientY - r.top) / r.height))];
+};
+let cur = null, buf = [], flushT = null;
+const round = (v) => Math.round(v * 10000) / 10000;
+function flush() {
+  clearTimeout(flushT); flushT = null;
+  if (cur && buf.length) { send([{ t: 'move', id: cur.id, p: buf.flat().map(round) }]); buf = []; }
+}
+cv.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const [x, y] = pos(e);
+  if (st.pendingText) {
+    const t = { text: st.pendingText, x, y, c: st.color, s: 0.07 };
+    st.pendingText = null; strokes.push(t); redraw();
+    send([{ t: 'text', text: t.text, x: round(x), y: round(y), c: t.c, s: t.s }]);
+    return;
+  }
+  cv.setPointerCapture(e.pointerId);
+  cur = { id: st.id++, c: st.color, w: st.size, pts: [[x, y]] };
+  strokes.push(cur); redraw();
+  send([{ t: 'begin', id: cur.id, c: cur.c, w: cur.w, x: round(x), y: round(y) }]);
+});
+cv.addEventListener('pointermove', (e) => {
+  if (!cur) return;
+  const p = pos(e);
+  cur.pts.push(p); buf.push(p); redraw();
+  if (!flushT) flushT = setTimeout(flush, 40);
+});
+const end = () => { if (!cur) return; flush(); send([{ t: 'end', id: cur.id }]); cur = null; };
+cv.addEventListener('pointerup', end);
+cv.addEventListener('pointercancel', end);
+
+$('#swatches').innerHTML = COLORS.map((c, i) => `<button class="swatch${i ? '' : ' on'}" data-c="${c}" style="--c:${c}" aria-label="Colour ${c}"></button>`).join('');
+document.querySelectorAll('[data-c]').forEach((b) => b.onclick = () => {
+  st.color = b.dataset.c;
+  document.querySelectorAll('[data-c]').forEach((x) => x.classList.toggle('on', x === b));
+});
+$('#size').onchange = (e) => { st.size = Number(e.target.value); };
+$('#undo').onclick = () => { strokes.pop(); redraw(); send([{ t: 'undo' }]); };
+$('#clear').onclick = () => { strokes.length = 0; redraw(); send([{ t: 'clear' }]); };
+$('#hide').onclick = () => { strokes.length = 0; redraw(); send([{ t: 'hide' }]); toast('Removed from the TV'); };
+$('#text').onclick = () => {
+  const t = prompt('Text to put on the TV');
+  if (t && t.trim()) { st.pendingText = t.trim().slice(0, 80); toast('Now tap where the text should go'); }
+};
+$('#message').onclick = () => {
+  const t = prompt('Message to show on the TV (20 seconds)');
+  if (t && t.trim()) { send([{ t: 'msg', text: t.trim().slice(0, 200), secs: 20 }]); toast('Message shown on the TV'); }
+};
+start();
+</script>
+</body>
+</html>

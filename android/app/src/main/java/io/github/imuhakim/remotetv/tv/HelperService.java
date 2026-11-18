@@ -42,12 +42,15 @@ import java.util.Set;
  */
 public class HelperService extends Service {
     static final int PORT = 7333;
+    /** Browser drawing page for iPad / iPhone / laptop (http://<tv>:7334). */
+    static final int HTTP_PORT = 7334;
     private static final String CHANNEL = "helper";
     private static final long CODE_MS = 120_000;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final SecureRandom random = new SecureRandom();
     private ServerSocket server;
+    private ServerSocket httpServer;
     private volatile boolean running;
     private WindowManager wm;
     private OverlayView overlay;
@@ -82,6 +85,7 @@ public class HelperService extends Service {
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         goForeground();
         startServer();
+        startHttp();
         registerNsd();
     }
 
@@ -95,6 +99,7 @@ public class HelperService extends Service {
     public void onDestroy() {
         running = false;
         try { if (server != null) server.close(); } catch (Exception ignored) { }
+        try { if (httpServer != null) httpServer.close(); } catch (Exception ignored) { }
         try { if (nsd != null && nsdListener != null) nsd.unregisterService(nsdListener); } catch (Exception ignored) { }
         ui.post(this::detach);
         super.onDestroy();
@@ -177,22 +182,10 @@ public class HelperService extends Service {
                     if (!authed && canDraw(this)) showCode(m.optString("name", "A phone"));
                     reply(out, r);
                 } else if (t.equals("pair")) {
-                    String code = m.optString("code", "").trim();
-                    boolean ok = pendingCode != null && System.currentTimeMillis() < pendingUntil && pendingTries < 5 && pendingCode.equals(code);
-                    pendingTries++;
-                    if (ok) {
-                        String token = hex(16);
-                        Set<String> all = tokens();
-                        all.add(token);
-                        prefs.edit().putStringSet("tokens", all).apply();
-                        pendingCode = null;
-                        authed = true;
-                        ui.post(hideCard);
-                        r.put("ok", true).put("token", token);
-                    } else {
-                        r.put("ok", false).put("error", pendingTries >= 5 ? "Too many tries. Connect again for a new code." : "Wrong code");
-                    }
-                    reply(out, r);
+                    JSONObject p = tryPair(m.optString("code", ""));
+                    if (p.optBoolean("ok")) authed = true;
+                    p.put("rid", m.optInt("rid", 0));
+                    reply(out, p);
                 } else if (t.equals("ping")) {
                     reply(out, r.put("ok", true));
                 } else if (authed) {
@@ -202,6 +195,136 @@ public class HelperService extends Service {
                 }
             }
         } catch (Exception ignored) { }
+    }
+
+    /** Checks the code shown on the TV; on success stores and returns a new token. */
+    private synchronized JSONObject tryPair(String code) throws Exception {
+        JSONObject r = new JSONObject();
+        boolean ok = pendingCode != null && System.currentTimeMillis() < pendingUntil && pendingTries < 5 && pendingCode.equals(code.trim());
+        pendingTries++;
+        if (ok) {
+            String token = hex(16);
+            Set<String> all = tokens();
+            all.add(token);
+            prefs.edit().putStringSet("tokens", all).apply();
+            pendingCode = null;
+            ui.post(hideCard);
+            r.put("ok", true).put("token", token);
+        } else {
+            r.put("ok", false).put("error", pendingTries >= 5 ? "Too many tries. Connect again for a new code." : "Wrong code");
+        }
+        return r;
+    }
+
+    private boolean validToken(String token) { return token != null && !token.isEmpty() && tokens().contains(token); }
+
+    // ------------------------------------------------------- web page (7334)
+    // Minimal HTTP/1.1 server: GET / serves the drawing page from the app's web
+    // assets; POST /api/hello|pair|ops take and return JSON. Keep-alive is
+    // supported so strokes from Safari do not open a connection each time.
+    private void startHttp() {
+        new Thread(() -> {
+            try {
+                httpServer = new ServerSocket(HTTP_PORT);
+                while (running) {
+                    final Socket s = httpServer.accept();
+                    new Thread(() -> serveHttp(s)).start();
+                }
+            } catch (Exception ignored) { }
+        }, "helper-http").start();
+    }
+
+    private static String readLine(java.io.InputStream in) throws Exception {
+        StringBuilder sb = new StringBuilder();
+        int c;
+        while ((c = in.read()) != -1) {
+            if (c == '\n') return sb.toString();
+            if (c != '\r') sb.append((char) c);
+            if (sb.length() > 8192) return null;
+        }
+        return sb.length() > 0 ? sb.toString() : null;
+    }
+
+    private void serveHttp(Socket sock) {
+        try (Socket s = sock) {
+            s.setSoTimeout(60_000);
+            s.setTcpNoDelay(true);
+            java.io.InputStream in = new java.io.BufferedInputStream(s.getInputStream());
+            OutputStream out = s.getOutputStream();
+            while (true) {
+                String first = readLine(in);
+                if (first == null || first.isEmpty()) return;
+                String[] parts = first.split(" ");
+                if (parts.length < 2) return;
+                String method = parts[0], path = parts[1];
+                int len = 0;
+                boolean close = first.endsWith("HTTP/1.0");
+                String h;
+                while ((h = readLine(in)) != null && !h.isEmpty()) {
+                    String lower = h.toLowerCase(Locale.US);
+                    if (lower.startsWith("content-length:")) len = Integer.parseInt(h.substring(15).trim());
+                    else if (lower.startsWith("connection:")) close = lower.contains("close");
+                }
+                if (len < 0 || len > 200_000) return;
+                byte[] body = new byte[len];
+                for (int off = 0; off < len; ) {
+                    int n = in.read(body, off, len - off);
+                    if (n < 0) return;
+                    off += n;
+                }
+                if (method.equals("GET") && (path.equals("/") || path.startsWith("/?") || path.equals("/index.html"))) {
+                    byte[] page;
+                    try (java.io.InputStream a = getAssets().open("public/tvdraw.html")) {
+                        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                        byte[] buf = new byte[8192];
+                        int n;
+                        while ((n = a.read(buf)) > 0) bos.write(buf, 0, n);
+                        page = bos.toByteArray();
+                    }
+                    respond(out, 200, "text/html; charset=utf-8", page, close);
+                } else if (method.equals("POST") && path.startsWith("/api/")) {
+                    JSONObject m;
+                    try { m = new JSONObject(new String(body, StandardCharsets.UTF_8)); } catch (Exception e) { m = new JSONObject(); }
+                    JSONObject r = api(path.substring(5), m);
+                    respond(out, r.optBoolean("ok") ? 200 : 403, "application/json", r.toString().getBytes(StandardCharsets.UTF_8), close);
+                } else {
+                    respond(out, 404, "text/plain", "Not found".getBytes(StandardCharsets.UTF_8), close);
+                }
+                if (close) return;
+            }
+        } catch (Exception ignored) { }
+    }
+
+    private JSONObject api(String name, JSONObject m) throws Exception {
+        JSONObject r = new JSONObject();
+        String token = m.optString("token", "");
+        if (name.equals("hello")) {
+            boolean paired = validToken(token);
+            Point size = screenSize();
+            r.put("ok", true).put("paired", paired).put("overlay", canDraw(this)).put("w", size.x).put("h", size.y);
+            if (!paired && canDraw(this)) showCode(m.optString("name", "A browser"));
+            return r;
+        }
+        if (name.equals("pair")) return tryPair(m.optString("code", ""));
+        if (name.equals("ops")) {
+            if (!validToken(token)) return r.put("ok", false).put("error", "Not paired");
+            JSONArray ops = m.optJSONArray("ops");
+            for (int i = 0; ops != null && i < ops.length() && i < 300; i++) {
+                JSONObject op = ops.optJSONObject(i);
+                if (op != null) draw(op.optString("t"), op);
+            }
+            return r.put("ok", true);
+        }
+        return r.put("ok", false).put("error", "Unknown request");
+    }
+
+    private static void respond(OutputStream out, int code, String type, byte[] body, boolean close) throws Exception {
+        String head = "HTTP/1.1 " + code + (code == 200 ? " OK" : code == 404 ? " Not Found" : " Forbidden") + "\r\n"
+                + "Content-Type: " + type + "\r\nContent-Length: " + body.length + "\r\nCache-Control: no-store\r\n"
+                + "Connection: " + (close ? "close" : "keep-alive") + "\r\n\r\n";
+        out.write(head.getBytes(StandardCharsets.UTF_8));
+        out.write(body);
+        out.flush();
     }
 
     private static synchronized void reply(OutputStream out, JSONObject r) throws Exception {

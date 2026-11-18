@@ -76,7 +76,10 @@ public class TvActivity extends Activity {
         String ip = localIp();
         StringBuilder sb = new StringBuilder();
         sb.append("Running").append(ip != null ? " at " + ip + ":" + HelperService.PORT : "").append("\n\n");
-        if (ok) sb.append("✓ Ready. On your phone open RemoteTV › More › Draw on TV.");
+        if (ok) {
+            sb.append("✓ Ready. On your phone open RemoteTV › More › Draw on TV.");
+            if (ip != null) sb.append("\n\niPad / iPhone / laptop: open  http://").append(ip).append(":").append(HelperService.HTTP_PORT).append("  in the browser.");
+        }
         else sb.append("✗ Drawing over other apps is not allowed yet.\nChoose the button below, or on your phone use RemoteTV › More › Draw on TV › Install on the TV, which allows it automatically.");
         if (extra != null) sb.append("\n\n").append(extra);
         status.setText(sb.toString());
