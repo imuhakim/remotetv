@@ -1004,13 +1004,13 @@ async function drawOnTv() {
   }
 }
 
-function drawPairSheet(size) {
+function drawPairSheet(size, next = drawCanvasSheet) {
   openSheet(`<h2>Pair with the TV</h2><p class="sub">A 6-digit code is now on the TV screen. Type it here (only needed once).</p>
     <div class="row gap"><input id="dCode" inputmode="numeric" maxlength="7" autocomplete="one-time-code" style="font-size:22px;letter-spacing:.3em;text-align:center"><button class="btn" id="dGo">Pair</button></div>`, (el) => {
     const input = $('#dCode', el);
     setTimeout(() => input.focus(), 250);
     const go = async () => {
-      try { await devApi('/draw/pair', { code: input.value }); toast('Paired ✓'); drawCanvasSheet(size); }
+      try { await devApi('/draw/pair', { code: input.value }); toast('Paired ✓'); next(size); }
       catch (e) { toast(e.message, true); }
     };
     $('#dGo', el).onclick = go;
@@ -1154,6 +1154,54 @@ function drawCanvasSheet(size) {
   });
 }
 
+// ------------------------------------------------------- cast phone screen
+// Two ways: RemoteTV's own mirroring to RemoteTV on an Android TV (no sound), or the
+// phone's own Cast screen (Chromecast built-in TVs such as Sony BRAVIA, with sound).
+const screenCast = { running: false, host: null };
+window.NativeBackend?.onScreenCast?.((e) => {
+  screenCast.running = !!e.running;
+  if (!e.running) screenCast.host = null;
+  if (e.error) toast(e.error, true);
+  else if (e.running) toast('Casting your screen to the TV ✓');
+  if ($('#scSheet')) screenCastSheet();
+});
+
+async function screenCastSheet() {
+  try { Object.assign(screenCast, await api('/screencast/state')); } catch { /* ignore */ }
+  const wifi = dev() && !/^infra-red/.test(dev().host || '');
+  openSheet(`<div id="scSheet"></div><h2>Cast phone screen</h2>
+    ${screenCast.running ? `<div class="card"><b>Casting now${screenCast.host ? ` to ${esc(screenCast.host)}` : ''}</b>
+      <small class="sub" style="display:block;margin-top:4px">Everything on this phone shows on the TV. You can switch to other apps.</small>
+      <div class="row gap"><button class="btn danger" id="scStop">Stop casting</button></div></div>` : ''}
+    <div class="card" style="margin-top:10px"><b>Through RemoteTV on the TV</b>
+      <small class="sub" style="display:block;margin-top:4px">For Android TV / Google TV with RemoteTV installed (also shop TVs). Picture only, no sound.</small>
+      <div class="row gap"><button class="btn" id="scGo" ${wifi && !screenCast.running ? '' : 'disabled'}>${wifi ? 'Start casting' : 'Pick a TV added over Wi-Fi first'}</button></div>
+      <p class="sub" id="scMsg"></p></div>
+    <div class="card" style="margin-top:10px"><b>Phone’s own Cast (with sound)</b>
+      <small class="sub" style="display:block;margin-top:4px">For TVs with Chromecast built-in (Sony BRAVIA Android TV, Google TV). Opens this phone’s Cast screen: pick the TV there.</small>
+      <div class="row gap"><button class="btn ghost" id="scSys">Open phone Cast</button></div></div>`, (el) => {
+    const msg = $('#scMsg', el);
+    if ($('#scStop', el)) $('#scStop', el).onclick = async () => { await api('/screencast/stop', { method: 'POST', body: {} }).catch(() => {}); };
+    $('#scSys', el).onclick = async () => {
+      try { await api('/screencast/system', { method: 'POST', body: {} }); }
+      catch (e) { toast(e.message, true); }
+    };
+    $('#scGo', el).onclick = async () => {
+      msg.textContent = 'Connecting to RemoteTV on the TV…';
+      try {
+        const r = await devApi('/screencast/start', {});
+        if (r.needPair) return drawPairSheet(r, () => screenCastSheet());
+        screenCast.host = dev().name;
+        msg.textContent = 'Allow “start recording or casting” on the phone, then the screen shows on the TV.';
+      } catch (e) {
+        if (/not running|Install it first/i.test(e.message)) helperInstallSheet();
+        else if (/not allowed to draw/i.test(e.message)) helperInstallSheet(e.message);
+        else msg.textContent = e.message;
+      }
+    };
+  });
+}
+
 // ------------------------------------------------------------ More sheet
 const MORE_ICONS = {
   open: '<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>',
@@ -1164,6 +1212,7 @@ const MORE_ICONS = {
   keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
   numbers: '<path d="M4 9h16M4 15h16M10 3L8 21M16 3l-2 18"/>',
   simple: '<rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="12" cy="12" r="4"/>',
+  cast: '<path d="M2 16.1A5 5 0 0 1 5.9 20M2 12.05A9 9 0 0 1 9.95 20M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 20h.01"/>',
   draw: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
   screen: '<rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M10 9l4 2-4 2z"/>',
   tvapps: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
@@ -1172,7 +1221,7 @@ const MORE_ICONS = {
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
 };
 function moreSheet() {
-  const items = [['open', 'Open on the TV'], ...(state.info?.draw ? [['draw', 'Draw on TV']] : []), ['sleep', 'Sleep timer'], ['scenes', 'Scenes'], ['air', 'Air Mouse'], ['input', 'Input'],
+  const items = [['open', 'Open on the TV'], ...(state.info?.screenCast ? [['cast', 'Cast phone screen']] : []), ...(state.info?.draw ? [['draw', 'Draw on TV']] : []), ['sleep', 'Sleep timer'], ['scenes', 'Scenes'], ['air', 'Air Mouse'], ['input', 'Input'],
     ['keyboard', 'Keyboard'], ['numbers', 'Numbers'], ['simple', 'Simple mode'], ['settings', 'TV settings']];
   if (state.info?.adb) items.push(['screen', 'TV screen'], ['tvapps', 'TV apps'], ['health', 'TV health'], ['adb', 'Advanced (ADB)']);
   const on = (k) => (k === 'simple' && settings.simple) || (k === 'sleep' && sleep.end) || (k === 'adb' && dev()?.adb);
@@ -1181,6 +1230,7 @@ function moreSheet() {
       const k = b.dataset.more;
       if (k === 'open') return openLinkSheet();
       if (k === 'draw') return drawOnTv();
+      if (k === 'cast') return screenCastSheet();
       if (k === 'sleep') return sleepSheet();
       if (k === 'scenes') return scenesSheet();
       if (k === 'air') return airMouseSheet();

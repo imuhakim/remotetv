@@ -548,6 +548,37 @@ test('APK Draw on TV: pairs with the TV Helper once, then streams strokes', asyn
   await be.request('DELETE', `/devices/${dev.id}`);
 });
 
+test('APK Cast phone screen: pairs first, then starts the cast with the TV token', async (t) => {
+  const helper = fakeHelper();
+  const port = await listen(helper.server);
+  t.after(() => helper.server.close());
+  const casts = [];
+  const plugin = { ...mockPlugin(),
+    screenCast: async (o) => { casts.push(o); },
+    screenCastStop: async () => { casts.push('stop'); },
+    screenCastState: async () => ({ running: false }),
+    openSystemCast: async () => ({ opened: 'android.settings.CAST_SETTINGS' }) };
+  const be = loadApp(plugin);
+  assert.equal((await be.request('GET', '/info')).screenCast, true);
+  const dev = await be.request('POST', '/devices', { host: '127.0.0.1', type: 'androidtv' });
+  await be.request('PATCH', `/devices/${dev.id}`, { helperPort: port });
+
+  const r1 = await be.request('POST', `/devices/${dev.id}/screencast/start`, {});
+  assert.equal(r1.needPair, true, 'asks to pair first');
+  assert.equal(casts.length, 0);
+  await be.request('POST', `/devices/${dev.id}/draw/pair`, { code: helper.code });
+  const r2 = await be.request('POST', `/devices/${dev.id}/screencast/start`, {});
+  assert.equal(r2.started, true);
+  assert.equal(casts[0].host, '127.0.0.1');
+  assert.equal(casts[0].port, 7335);
+  assert.match(casts[0].token, /^[0-9a-f]{32}$/);
+  await be.request('POST', '/screencast/stop', {});
+  assert.equal(casts[1], 'stop');
+  assert.equal((await be.request('POST', '/screencast/system', {})).opened, 'android.settings.CAST_SETTINGS');
+  plugin.screenCast = async () => { throw new Error('cancelled'); };
+  await assert.rejects(be.request('POST', `/devices/${dev.id}/screencast/start`, {}), /cancelled/);
+});
+
 test('APK infra-red: every protocol encoder decodes back to its codes', () => {
   const be = loadApp({ ...mockPlugin(), irInfo: async () => ({ hasIr: true }) });
   const { encode } = be.win.NativeTv.ir;

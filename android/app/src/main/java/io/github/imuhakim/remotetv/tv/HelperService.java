@@ -51,6 +51,7 @@ public class HelperService extends Service {
     private final SecureRandom random = new SecureRandom();
     private ServerSocket server;
     private ServerSocket httpServer;
+    private CastReceiver cast;
     private volatile boolean running;
     private WindowManager wm;
     private OverlayView overlay;
@@ -86,6 +87,8 @@ public class HelperService extends Service {
         goForeground();
         startServer();
         startHttp();
+        cast = new CastReceiver(this, this::validToken);
+        cast.start();
         registerNsd();
     }
 
@@ -100,6 +103,7 @@ public class HelperService extends Service {
         running = false;
         try { if (server != null) server.close(); } catch (Exception ignored) { }
         try { if (httpServer != null) httpServer.close(); } catch (Exception ignored) { }
+        if (cast != null) cast.stop();
         try { if (nsd != null && nsdListener != null) nsd.unregisterService(nsdListener); } catch (Exception ignored) { }
         ui.post(this::detach);
         super.onDestroy();
@@ -216,7 +220,7 @@ public class HelperService extends Service {
         return r;
     }
 
-    private boolean validToken(String token) { return token != null && !token.isEmpty() && tokens().contains(token); }
+    boolean validToken(String token) { return token != null && !token.isEmpty() && tokens().contains(token); }
 
     // ------------------------------------------------------- web page (7334)
     // Minimal HTTP/1.1 server: GET / serves the drawing page from the app's web

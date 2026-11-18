@@ -176,7 +176,7 @@
   const routes = [
     ['GET', /^\/info$/, async () => {
       const ir = await Promise.resolve().then(() => RemoteTv.irInfo()).catch(() => ({ hasIr: false }));
-      return { keys: KEYS, hub: 'This phone (no hub needed)', native: true, adb: !!window.NativeAdb, draw: !!window.NativeHelper, hasIr: !!ir.hasIr, lastDeviceId: data.lastDeviceId };
+      return { keys: KEYS, hub: 'This phone (no hub needed)', native: true, adb: !!window.NativeAdb, draw: !!window.NativeHelper, screenCast: !!window.NativeHelper, hasIr: !!ir.hasIr, lastDeviceId: data.lastDeviceId };
     }],
     ['GET', /^\/ir\/brands$/, () => window.NativeTv.ir.catalog()],
     ['POST', /^\/ir\/test$/, async (b) => { await window.NativeTv.ir.irTest(String(b.brand), String(b.key || 'vol_up')); }],
@@ -361,6 +361,21 @@
       const ops = (Array.isArray(b.ops) ? b.ops : []).filter((o) => o && ok.has(o.t)).slice(0, 300);
       if (ops.length) await h.write(ops);
     }],
+    // Cast phone screen: own mirroring to RemoteTV on the TV (port 7335), or the phone's Cast screen
+    ['POST', /^\/devices\/(\w+)\/screencast\/start$/, async (b, m) => {
+      const h = await helperFor(m[1], { fresh: true });
+      if (!h.overlay) throw err(409, OVERLAY_OFF);
+      if (!h.paired) return { needPair: true, w: h.size.w, h: h.size.h };
+      const d = getDev(m[1]);
+      try { await RemoteTv.screenCast({ host: d.host, port: 7335, token: d.helperToken }); }
+      catch (e) { throw err(/cancel/i.test(e.message) ? 400 : 502, /cancel/i.test(e.message) ? 'Screen cast cancelled' : e.message); }
+      return { started: true };
+    }],
+    ['POST', /^\/screencast\/stop$/, async () => { await RemoteTv.screenCastStop(); }],
+    ['GET', /^\/screencast\/state$/, async () => RemoteTv.screenCastState()],
+    ['POST', /^\/screencast\/system$/, async () => {
+      try { return await RemoteTv.openSystemCast(); } catch (e) { throw err(404, e.message); }
+    }],
     ['POST', /^\/devices\/(\w+)\/cast\/control$/, async (b, m) => { await cast.control(dlnaOf(m[1]).dlna, b.action, b.value); }],
     ['GET', /^\/devices\/(\w+)\/cast\/status$/, async (b, m) => cast.status(dlnaOf(m[1]).dlna)],
   ];
@@ -383,6 +398,7 @@
     onEvent(cb) { listener = cb; },
     keepAwake(on) { return RemoteTv.keepAwake({ on }).catch(() => {}); },
     saveImage(data, name) { return RemoteTv.saveImage({ data, name }); },
+    onScreenCast(cb) { RemoteTv.addListener('screenCast', cb).catch?.(() => {}); },
     // Links shared to the app from other apps (Share › RemoteTV).
     onShared(cb) {
       RemoteTv.addListener('shared', (e) => cb(e.text)).catch?.(() => {});

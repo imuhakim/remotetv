@@ -307,6 +307,84 @@ public class RemoteTvPlugin extends Plugin {
         return Base64.decode(b64, Base64.DEFAULT);
     }
 
+    // ---------------------------------------------------------- screen cast
+    // Own mirroring to RemoteTV on an Android TV (ScreenCastService -> tv/CastReceiver).
+    @Override
+    public void load() {
+        super.load();
+        ScreenCastService.listener = (running, error) -> {
+            JSObject e = new JSObject();
+            e.put("running", running);
+            if (error != null) e.put("error", error);
+            notifyListeners("screenCast", e);
+        };
+    }
+
+    @PluginMethod
+    public void screenCast(PluginCall call) {
+        if (call.getString("host", "").isEmpty() || call.getString("token", "").isEmpty()) { call.reject("Missing TV"); return; }
+        android.media.projection.MediaProjectionManager mpm = (android.media.projection.MediaProjectionManager)
+                getContext().getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        startActivityForResult(call, mpm.createScreenCaptureIntent(), "onCastConsent");
+    }
+
+    @ActivityCallback
+    private void onCastConsent(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+        if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) { call.reject("cancelled"); return; }
+        Intent i = new Intent(getContext(), ScreenCastService.class)
+                .putExtra("code", result.getResultCode())
+                .putExtra("data", result.getData())
+                .putExtra("host", call.getString("host"))
+                .putExtra("port", call.getInt("port", 7335))
+                .putExtra("token", call.getString("token"));
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(i); else getContext().startService(i);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Cannot start screen cast: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void screenCastStop(PluginCall call) {
+        if (ScreenCastService.running || ScreenCastService.target != null) {
+            getContext().startService(new Intent(getContext(), ScreenCastService.class).setAction(ScreenCastService.STOP));
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void screenCastState(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("running", ScreenCastService.running);
+        r.put("host", ScreenCastService.target);
+        call.resolve(r);
+    }
+
+    /** Opens the phone's own Cast / Smart View screen (Chromecast built-in TVs, with sound). */
+    @PluginMethod
+    public void openSystemCast(PluginCall call) {
+        String[][] tries = {
+                {"android.settings.CAST_SETTINGS", null},
+                {"android.settings.WIFI_DISPLAY_SETTINGS", null},
+                {null, "com.google.android.apps.chromecast.app"},
+        };
+        for (String[] t : tries) {
+            try {
+                Intent i = t[0] != null ? new Intent(t[0]) : getContext().getPackageManager().getLaunchIntentForPackage(t[1]);
+                if (i == null) continue;
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(i);
+                JSObject r = new JSObject();
+                r.put("opened", t[0] != null ? t[0] : t[1]);
+                call.resolve(r);
+                return;
+            } catch (Exception ignored) { }
+        }
+        call.reject("This phone has no Cast screen. Use “Through RemoteTV on the TV” instead.");
+    }
+
     // ----------------------------------------------------------- media cast
     @PluginMethod
     public void pickMedia(PluginCall call) {
