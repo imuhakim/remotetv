@@ -1202,6 +1202,8 @@ async function screenCastSheet() {
   });
 }
 
+$('#btnScreenCast').onclick = screenCastSheet;
+
 // ------------------------------------------------------------ More sheet
 const MORE_ICONS = {
   open: '<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>',
@@ -1389,6 +1391,7 @@ function loadScript(src) {
   if (!NATIVE && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   try {
     state.info = await api('/info');
+    $('#screenCastBox')?.classList.toggle('hidden', !state.info?.screenCast);
     if (state.info.hasIr) state.irBrands = await api('/ir/brands').catch(() => []);
     $('#hubAddr').textContent = NATIVE ? 'Running on this phone — no PC needed' : `${state.info.hub}  ·  HTTPS :8443 for voice`;
     await loadDevices();

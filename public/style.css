@@ -263,3 +263,8 @@ body.simple .rlabel b { font-size: 26px; }
 .tv-pick > div { min-width: 0; }
 .tv-edit { flex: none; width: 48px; align-self: stretch; font-size: 20px; color: var(--muted); border-left: 1px solid var(--line); }
 .btn:disabled { opacity: .5; cursor: default; }
+.screencast-card { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; cursor: pointer; }
+.screencast-card span { display: flex; flex-direction: column; gap: 4px; }
+.screencast-card small { color: var(--muted); font-weight: 400; }
+.ic.purple { background: linear-gradient(135deg, #a78bfa, #7c3aed); flex: none; }
+.ic.purple svg { width: 26px; height: 26px; fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; }
